@@ -58,6 +58,7 @@ import org.siloserver.silo.common.ui.components.SpoilerImage
 import org.siloserver.silo.common.ui.components.DefaultArtworkKind
 import org.siloserver.silo.common.ui.components.ThumbhashImage
 import org.siloserver.silo.model.catalog.EpisodeListItem
+import org.siloserver.silo.model.catalog.hasMachineTranslatedOverview
 import org.siloserver.silo.model.settings.EpisodeSpoilers
 import kotlin.math.abs
 
@@ -178,6 +179,8 @@ private fun EpisodeRailCard(
     val stillShape = RoundedCornerShape(8.dp)
     val spoilers = LocalEpisodeSpoilerPrefs.current
     val unwatched = EpisodeSpoilers.isUnwatched(episode.userData)
+    val visibleOverview = episode.overview
+        ?.takeIf { it.isNotBlank() && !spoilers.hidesOverview(unwatched) }
     val progress = episodeProgressFraction(
         positionSeconds = episode.userData?.positionSeconds,
         durationSeconds = episode.userData?.durationSeconds,
@@ -284,6 +287,11 @@ private fun EpisodeRailCard(
                     letterSpacing = 1.sp,
                     color = Color.White.copy(alpha = 0.55f),
                 )
+                if (showsEpisodeDetails && visibleOverview != null &&
+                    hasMachineTranslatedOverview(episode.machineTranslatedFields)
+                ) {
+                    DetailMachineTranslatedLabel(compact = true, iconSize = 11.dp)
+                }
                 if (isCurrent) {
                     Text(
                         text = "NOW VIEWING",
@@ -322,11 +330,9 @@ private fun EpisodeRailCard(
                 }
                 // Spoiler protection omits the text; the fixed-height column
                 // keeps the card the same size.
-                val overview = episode.overview
-                    ?.takeIf { it.isNotBlank() && !spoilers.hidesOverview(unwatched) }
-                if (overview != null) {
+                if (visibleOverview != null) {
                     Text(
-                        text = overview,
+                        text = visibleOverview,
                         style = MaterialTheme.typography.bodySmall,
                         color = DetailSecondaryText,
                         maxLines = 3,

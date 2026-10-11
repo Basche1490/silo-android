@@ -33,6 +33,7 @@ import org.siloserver.silo.android.ui.theme.SiloBackground
 import org.siloserver.silo.android.ui.util.rememberDominantColor
 import org.siloserver.silo.common.cards.LocalEpisodeSpoilerPrefs
 import org.siloserver.silo.model.catalog.EpisodeListItem
+import org.siloserver.silo.model.catalog.hasMachineTranslatedOverview
 import org.siloserver.silo.model.catalog.ItemDetail
 import org.siloserver.silo.model.catalog.ItemExtra
 import org.siloserver.silo.model.catalog.Season
@@ -129,6 +130,19 @@ fun SeriesDetailContent(
             ?.takeIf { it.isNotBlank() }
             ?: selectedEpisode?.overview?.takeIf { it.isNotBlank() }
     }
+    // Mark the episode overview by the same source the text above came from.
+    val selectedEpisodeOverviewMachineTranslated = when {
+        !loadedSelectedEpisodeDetail?.overview.isNullOrBlank() ->
+            hasMachineTranslatedOverview(loadedSelectedEpisodeDetail?.machineTranslatedFields)
+        selectedEpisodeOverview != null -> hasMachineTranslatedOverview(selectedEpisode?.machineTranslatedFields)
+        else -> false
+    }
+    val episodeTranslationLabel: (@Composable () -> Unit)? =
+        if (!hidesSelectedEpisodeOverview && selectedEpisodeOverviewMachineTranslated) {
+            { DetailMachineTranslatedLabel() }
+        } else {
+            null
+        }
     // iOS keeps the series cast credit stable while the selected episode's
     // overview and playback options change. Reusing the series credit avoids
     // replacing it with a skeleton (and repainting different names) on every
@@ -293,7 +307,7 @@ fun SeriesDetailContent(
                 directorText = fixedSeriesCredit,
                 isCreditLoading = false,
                 reserveCreditSpace = !isExpandedDetailLayout && usesEpisodeEditorial,
-                translation = if (isExpandedDetailLayout || !usesEpisodeEditorial) translation else null,
+                translation = if (isExpandedDetailLayout || !usesEpisodeEditorial) translation else episodeTranslationLabel,
                 belowOverview = if (isExpandedDetailLayout) null else playbackSelector,
                 expandedBelowOverview = {
                     episodeSection(true)

@@ -70,6 +70,7 @@ import org.siloserver.silo.common.ui.components.SpoilerImage
 import org.siloserver.silo.common.ui.components.DefaultArtworkKind
 import org.siloserver.silo.common.ui.components.ThumbhashImage
 import org.siloserver.silo.model.catalog.EpisodeListItem
+import org.siloserver.silo.model.catalog.hasMachineTranslatedOverview
 import org.siloserver.silo.model.settings.EpisodeSpoilers
 import org.siloserver.silo.tv.ui.components.TvMediaCardActions
 import org.siloserver.silo.tv.ui.components.TvMediaCardContextMenu
@@ -363,6 +364,8 @@ private fun TvDetailEpisodeCard(
     val cardWidth = if (usesSeriesGeometry) tvEpisodeCardWidth() else 230.dp.cardScaled()
     val spoilers = LocalEpisodeSpoilerPrefs.current
     val unwatched = EpisodeSpoilers.isUnwatched(episode.userData)
+    val visibleOverview = episode.overview
+        ?.takeIf { it.isNotBlank() && !spoilers.hidesOverview(unwatched) }
     val stillHeight = if (usesSeriesGeometry) cardWidth * (9f / 16f) else 130.dp.cardScaled()
     val eyebrowFontSize = if (usesSeriesGeometry) 11.sp else 14.sp
     val eyebrowLineHeight = if (usesSeriesGeometry) 14.sp else 17.sp
@@ -528,6 +531,12 @@ private fun TvDetailEpisodeCard(
                     } else if (isCurrent) {
                         NowViewingTag()
                     }
+                    if (!hidesEpisodeTitle && caption.showsMetadata &&
+                        visibleOverview != null &&
+                        hasMachineTranslatedOverview(episode.machineTranslatedFields)
+                    ) {
+                        TvMachineTranslatedLabel(compact = true, iconSize = 12.dp)
+                    }
                 }
 
                 if (!hidesEpisodeTitle) {
@@ -565,9 +574,7 @@ private fun TvDetailEpisodeCard(
                     // identical vertical metrics. Spoiler protection blanks it
                     // the same way.
                     Text(
-                        text = episode.overview
-                            ?.takeIf { it.isNotBlank() && !spoilers.hidesOverview(unwatched) }
-                            .orEmpty(),
+                        text = visibleOverview.orEmpty(),
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Normal,
                         color = SiloSecondaryText,

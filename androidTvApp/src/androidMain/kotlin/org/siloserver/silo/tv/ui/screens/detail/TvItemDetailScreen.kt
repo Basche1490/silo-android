@@ -110,6 +110,8 @@ import org.siloserver.silo.common.cards.LocalEpisodeSpoilerPrefs
 import org.siloserver.silo.common.ui.movieDirectorCredit
 import org.siloserver.silo.common.ui.openYoutubeTrailer
 import org.siloserver.silo.metadata.DescriptionTranslationPhase
+import org.siloserver.silo.model.catalog.hasMachineTranslatedOverview
+import org.siloserver.silo.model.catalog.pendingEpisodeTranslationLanguage
 import org.siloserver.silo.model.audiobook.AudiobookNarration
 import org.siloserver.silo.model.catalog.EpisodeListItem
 import org.siloserver.silo.model.catalog.FileVersion
@@ -777,6 +779,34 @@ private fun TvDetailContent(
             viewModel.translateDescription(auto = true)
         }
     }
+    // A series page's rail lists the selected season's episodes; the season's
+    // job fills any episode description still missing.
+    val pendingEpisodeLanguage = state.episodes
+        .filter { it.seasonNumber == state.selectedSeason }
+        .pendingEpisodeTranslationLanguage()
+    LaunchedEffect(
+        detail.contentId,
+        state.selectedSeason,
+        state.seasons.isNotEmpty(),
+        pendingEpisodeLanguage,
+        metadataAiStatus.onView,
+    ) {
+        if (metadataAiStatus.onView == MetadataAiOnView.Auto && pendingEpisodeLanguage != null) {
+            viewModel.translateShownSeasonEpisodes()
+        }
+    }
+    // Label the shown description when the server reports it machine-translated:
+    // the focused episode's on a series page, else the page item's own.
+    val heroMachineTranslated = if (activeSeriesEpisode != null) {
+        if (!activeSeriesPlaybackDetail?.overview.isNullOrBlank()) {
+            hasMachineTranslatedOverview(activeSeriesPlaybackDetail?.machineTranslatedFields)
+        } else {
+            hasMachineTranslatedOverview(activeSeriesEpisode.machineTranslatedFields)
+        }
+    } else {
+        hasMachineTranslatedOverview(detail.machineTranslatedFields) &&
+            translationPhase != DescriptionTranslationPhase.Translating
+    } && !heroOverview.isNullOrBlank()
     val translationSlot: (@Composable () -> Unit)? =
         if (detail.pendingTranslationLanguage != null &&
             (metadataAiStatus.onView == MetadataAiOnView.Button ||
@@ -880,6 +910,7 @@ private fun TvDetailContent(
                             translation = translationSlot.takeIf {
                                 activeSeriesEpisode == null && !hidesHeroOverview
                             },
+                            machineTranslated = heroMachineTranslated && !hidesHeroOverview,
                             compactSeries = isSeriesDetail,
                             playbackSummary = {
                                 TvDetailPlaybackSelectionSummary(

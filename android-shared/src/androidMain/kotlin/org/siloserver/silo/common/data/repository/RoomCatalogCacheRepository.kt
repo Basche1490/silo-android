@@ -1,5 +1,7 @@
 package org.siloserver.silo.common.data.repository
 
+import org.siloserver.silo.repository.port.CatalogCacheScope
+
 import org.siloserver.silo.common.data.db.SiloDatabase
 import org.siloserver.silo.common.data.db.entity.CatalogCacheEntity
 import org.siloserver.silo.model.catalog.CatalogResponse
@@ -30,6 +32,15 @@ class RoomCatalogCacheRepository(
 
     private val dao = db.catalogCacheDao()
     private val json = Json { ignoreUnknownKeys = true }
+
+    override suspend fun invalidateDetailMetadata(scope: CatalogCacheScope?) {
+        val owner = scope ?: run {
+            val snapshot = snapshotProvider() ?: return
+            val profile = snapshot.profileId ?: return
+            CatalogCacheScope(snapshot.serverId, profile)
+        }
+        dao.deleteDetailMetadata(owner.serverId, owner.profileId)
+    }
 
     override suspend fun cacheLibraries(libraries: List<UserLibrary>) =
         cacheLibraries(libraries, currentWriteLease())

@@ -27,6 +27,7 @@ internal data class ItemDetailReadV2(
     val year: Int = 0,
     val overview: String? = null,
     @SerialName("pending_translation_language") val pendingTranslationLanguage: String? = null,
+    @SerialName("machine_translated_fields") val machineTranslatedFields: List<String> = emptyList(),
     val tagline: String? = null,
     val runtime: Int = 0,
     @SerialName("content_rating") val contentRating: String? = null,
@@ -93,6 +94,7 @@ internal data class ItemDetailReadV2(
         year = year,
         overview = overview,
         pendingTranslationLanguage = pendingTranslationLanguage,
+        machineTranslatedFields = machineTranslatedFields,
         tagline = tagline,
         runtime = runtime,
         contentRating = contentRating,
@@ -283,7 +285,9 @@ internal data class EpisodeListItemReadV2(
     @SerialName("still_url") val stillUrl: String? = null,
     @SerialName("still_thumbhash") val stillThumbhash: String? = null,
     @SerialName("user_data") val userData: LeafItemUserDataReadV2? = null,
-    val files: List<EpisodeFileReadV2> = emptyList()
+    val files: List<EpisodeFileReadV2> = emptyList(),
+    @SerialName("pending_translation_language") val pendingTranslationLanguage: String? = null,
+    @SerialName("machine_translated_fields") val machineTranslatedFields: List<String> = emptyList(),
 ) {
     fun toDomain() = EpisodeListItem(
         contentId = contentId,
@@ -301,6 +305,8 @@ internal data class EpisodeListItemReadV2(
         stillThumbhash = stillThumbhash,
         userData = userData?.toDomain(),
         files = files.map { it.toDomain() },
+        pendingTranslationLanguage = pendingTranslationLanguage,
+        machineTranslatedFields = machineTranslatedFields,
     )
 }
 

@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.sync.Semaphore
@@ -165,6 +166,7 @@ class TvLibraryDetailViewModel(
     private val libraryType: String,
     private val mediaScope: String? = null,
     private val browsePrefs: BrowsePrefsStore? = null,
+    catalogLanguage: org.siloserver.silo.domain.settings.CatalogLanguageRevision? = null,
 ) : ViewModel() {
     /** Access changes this ViewModel has applied, kept while its screen is away. */
     val accessChanges = org.siloserver.silo.network.AccessChangeCursor()
@@ -243,6 +245,14 @@ class TvLibraryDetailViewModel(
         // `/catalog/filters` call is slow and is wasted work for the (common)
         // case where the user never leaves Recommended.
         loadRecommended()
+        // Titles and descriptions are localized per metadata language.
+        catalogLanguage?.let { language ->
+            viewModelScope.launch {
+                language.revision.drop(1).collect {
+                    refreshAfterLanguageChange()
+                }
+            }
+        }
     }
 
     fun onTabSelected(tab: TvLibraryTab) {
@@ -414,6 +424,36 @@ class TvLibraryDetailViewModel(
     fun retryAudiobookGroups() {
         val groupBy = _uiState.value.selectedTab.audiobookGroupBy ?: return
         loadAudiobookGroups(groupBy = groupBy, reset = true)
+    }
+
+    private fun refreshAfterLanguageChange() {
+        recommendedJob?.cancel()
+        filtersJob?.cancel()
+        collectionsJob?.cancel()
+        ++recommendedGeneration
+        ++browseGeneration
+        ++audiobookGroupsGeneration
+        browseContinuation = null
+        audiobookContinuation = null
+        _uiState.update {
+            it.copy(
+                sections = emptyList(),
+                browseItems = emptyList(),
+                collections = emptyList(),
+                collectionSections = emptyList(),
+                genres = emptyList(),
+                facetOptions = null,
+                recommendedLoading = false,
+                browseLoading = false,
+                browseLoadingMore = false,
+                audiobookGroups = emptyList(),
+                audiobookGroupsLoading = false,
+                audiobookGroupsLoadingMore = false,
+                filtersLoading = false,
+                collectionsLoading = false,
+            )
+        }
+        refreshAfterAccessChange()
     }
 
     /**

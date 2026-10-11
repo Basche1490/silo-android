@@ -93,6 +93,8 @@ import org.siloserver.silo.network.AccessChangeSignals
 import org.siloserver.silo.metadata.DescriptionTranslationPhase
 import org.siloserver.silo.model.feature.MetadataAiFeatureStore
 import org.siloserver.silo.model.metadata.MetadataAiOnView
+import org.siloserver.silo.model.catalog.hasMachineTranslatedOverview
+import org.siloserver.silo.model.catalog.pendingEpisodeTranslationLanguage
 
 internal data class SeriesDetailRedirect(
     val seriesContentId: String,
@@ -410,6 +412,22 @@ fun ItemDetailScreen(
                         viewModel.translateDescription(auto = true)
                     }
                 }
+                // The series page lists the selected season's episodes inline;
+                // the season's job fills any episode description still missing.
+                val pendingEpisodeLanguage = state.episodes
+                    .filter { it.seasonNumber == state.selectedSeasonNumber }
+                    .pendingEpisodeTranslationLanguage()
+                LaunchedEffect(
+                    detail.contentId,
+                    state.selectedSeasonNumber,
+                    state.seasons.isNotEmpty(),
+                    pendingEpisodeLanguage,
+                    metadataAiStatus.onView,
+                ) {
+                    if (metadataAiStatus.onView == MetadataAiOnView.Auto && pendingEpisodeLanguage != null) {
+                        viewModel.translateShownSeasonEpisodes()
+                    }
+                }
                 val translationSlot: (@Composable () -> Unit)? = if (translationEligible &&
                     (metadataAiStatus.onView == MetadataAiOnView.Button ||
                         translationPhase != DescriptionTranslationPhase.Idle)
@@ -420,6 +438,10 @@ fun ItemDetailScreen(
                             onTranslate = { viewModel.translateDescription() },
                         )
                     }
+                } else if (hasMachineTranslatedOverview(detail.machineTranslatedFields) &&
+                    !detail.overview.isNullOrBlank()
+                ) {
+                    { DetailMachineTranslatedLabel() }
                 } else {
                     null
                 }

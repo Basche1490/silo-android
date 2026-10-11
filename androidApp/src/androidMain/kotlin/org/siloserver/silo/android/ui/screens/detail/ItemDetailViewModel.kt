@@ -6,6 +6,8 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import org.siloserver.silo.common.downloads.DownloadEnqueuer
+import org.siloserver.silo.model.catalog.withEpisodeDescription
+import org.siloserver.silo.model.catalog.withTranslatedDescription
 import org.siloserver.silo.model.catalog.EpisodeListItem
 import org.siloserver.silo.model.catalog.FileVersion
 import org.siloserver.silo.model.catalog.ItemDetail
@@ -24,6 +26,7 @@ import org.siloserver.silo.network.isAccessRefusal
 import org.siloserver.silo.model.catalog.isBookLikeItemType
 import org.siloserver.silo.metadata.DescriptionTranslationController
 import org.siloserver.silo.metadata.DescriptionTranslationPhase
+import org.siloserver.silo.model.catalog.pendingEpisodeTranslationLanguage
 import org.siloserver.silo.repository.CatalogRepository
 import org.siloserver.silo.repository.MetadataAiRepository
 import org.siloserver.silo.repository.DownloadsRepository
@@ -49,6 +52,7 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.ensureActive
 
 /**
  * UI state for the item detail screen.
@@ -211,6 +215,16 @@ class ItemDetailViewModel(
         delayMs = { kotlinx.coroutines.delay(it) },
     )
     val translationPhase: StateFlow<DescriptionTranslationPhase> = descriptionTranslation.phase
+
+    // A season's translation job also fills its episodes' descriptions. Phone
+    // has no season page — the series page lists the selected season's
+    // episodes inline — so this page starts that job when an episode row
+    // reports a missing description. Its own controller keeps the series
+    // overview's single-flight latch independent.
+    private val episodeTranslation = DescriptionTranslationController(
+        repository = metadataAiRepository,
+        delayMs = { kotlinx.coroutines.delay(it) },
+    )
 
     init {
         viewModelScope.launch {
@@ -712,10 +726,11 @@ class ItemDetailViewModel(
 
             for (season in accumulator.remainingSeasons(seasons)) {
                 if (!routeActive) return@launch
+                val descriptionRevision = episodeDescriptionRevisions[season.seasonNumber] ?: 0L
                 when (val r = catalogRepository.getEpisodes(seriesId, season.seasonNumber, libraryId = libraryId)) {
                     is ApiResult.Success -> {
                         val episodes = withLocalProgress(r.data.episodes)
-                        cacheEpisodes(season.seasonNumber, episodes)
+                        cacheEpisodes(season.seasonNumber, episodes, descriptionRevision)
                         accumulator.recordSeason(season.seasonNumber, episodes)
                         _uiState.update {
                             it.copy(
@@ -858,11 +873,15 @@ class ItemDetailViewModel(
                 catalogRepository.getItemDetail(contentId, libraryId = libraryId)
             }
             when (result) {
-                is ApiResult.Success -> _uiState.update { state ->
-                    if (state.selectedEpisodeContentId != contentId) state else state.copy(
-                        selectedEpisodeDetail = withLocalProgress(result.data),
-                        isLoadingSelectedEpisodeDetail = false,
-                    )
+                is ApiResult.Success -> {
+                    val refreshed = withLocalProgress(result.data)
+                    _uiState.update { state ->
+                        if (state.selectedEpisodeContentId != contentId) state else state.copy(
+                            selectedEpisodeDetail = state.episodes.firstOrNull { it.contentId == contentId }
+                                ?.let(refreshed::withEpisodeDescription) ?: refreshed,
+                            isLoadingSelectedEpisodeDetail = false,
+                        )
+                    }
                 }
                 else -> _uiState.update { state ->
                     if (state.selectedEpisodeContentId != contentId) state else state.copy(
@@ -911,6 +930,7 @@ class ItemDetailViewModel(
         preferPrefetched: Boolean = false,
         fresh: Boolean = false,
     ) {
+        episodeRebuildGenerations[seasonNumber] = (episodeRebuildGenerations[seasonNumber] ?: 0L) + 1
         episodeLoadJob?.cancel()
         val cachedEpisodes = _uiState.value.episodesBySeason[seasonNumber]
         if (!forceRefresh && cachedEpisodes != null) {
@@ -933,6 +953,7 @@ class ItemDetailViewModel(
             }
             return
         }
+        val descriptionRevision = episodeDescriptionRevisions[seasonNumber] ?: 0L
         episodeLoadJob = viewModelScope.launch {
             _uiState.update {
                 it.copy(
@@ -953,12 +974,17 @@ class ItemDetailViewModel(
                 is ApiResult.Success -> {
                     val episodes = withLocalProgress(result.data.episodes)
                     loadedSeasonNumber = seasonNumber
+                    episodeRebuildGenerations[seasonNumber] = (episodeRebuildGenerations[seasonNumber] ?: 0L) + 1
                     _uiState.update {
-                        val cache = it.episodesBySeason + (seasonNumber to episodes)
+                        val current = it.episodesBySeason[seasonNumber].orEmpty().associateBy { row -> row.contentId }
+                        val rows = if (descriptionRevision != (episodeDescriptionRevisions[seasonNumber] ?: 0L)) {
+                            episodes.map { row -> current[row.contentId]?.let(row::withTranslatedDescription) ?: row }
+                        } else episodes
+                        val cache = it.episodesBySeason + (seasonNumber to rows)
                         it.copy(
                             isLoadingEpisodes = false,
                             episodesBySeason = cache,
-                            episodes = if (it.selectedSeasonNumber == seasonNumber) episodes else it.episodes,
+                            episodes = if (it.selectedSeasonNumber == seasonNumber) rows else it.episodes,
                         )
                     }
                     ensureSeriesEpisodeSelection(episodes)
@@ -989,15 +1015,39 @@ class ItemDetailViewModel(
         }
     }
 
+    private val episodeDescriptionRevisions = mutableMapOf<Int, Long>()
+    private val episodeRebuildGenerations = mutableMapOf<Int, Long>()
+
     private fun cacheEpisodes(
         seasonNumber: Int,
         episodes: List<EpisodeListItem>,
+        descriptionRevision: Long,
     ) {
+        episodeRebuildGenerations[seasonNumber] = (episodeRebuildGenerations[seasonNumber] ?: 0L) + 1
         _uiState.update {
-            val cache = it.episodesBySeason + (seasonNumber to episodes)
+            val current = it.episodesBySeason[seasonNumber].orEmpty().associateBy { row -> row.contentId }
+            val rows = if (descriptionRevision != (episodeDescriptionRevisions[seasonNumber] ?: 0L)) {
+                episodes.map { row -> current[row.contentId]?.let(row::withTranslatedDescription) ?: row }
+            } else episodes
+            val cache = it.episodesBySeason + (seasonNumber to rows)
             it.copy(
                 episodesBySeason = cache,
-                episodes = if (it.selectedSeasonNumber == seasonNumber) episodes else it.episodes,
+                episodes = if (it.selectedSeasonNumber == seasonNumber) rows else it.episodes,
+            )
+        }
+    }
+
+    private fun cacheTranslatedEpisodes(seasonNumber: Int, fresh: List<EpisodeListItem>) {
+        episodeDescriptionRevisions[seasonNumber] = (episodeDescriptionRevisions[seasonNumber] ?: 0L) + 1
+        _uiState.update { state ->
+            val current = state.episodesBySeason[seasonNumber].orEmpty().associateBy { it.contentId }
+            val merged = fresh.map { row -> current[row.contentId]?.withTranslatedDescription(row) ?: row }
+            val selected = merged.firstOrNull { it.contentId == state.selectedEpisodeContentId }
+            state.copy(
+                episodesBySeason = state.episodesBySeason + (seasonNumber to merged),
+                episodes = if (state.selectedSeasonNumber == seasonNumber) merged else state.episodes,
+                selectedEpisodeDetail = selected?.let { state.selectedEpisodeDetail?.withEpisodeDescription(it) }
+                    ?: state.selectedEpisodeDetail,
             )
         }
     }
@@ -1248,6 +1298,59 @@ class ItemDetailViewModel(
     }
 
     /**
+     * `auto` on-view mode for the inline episode list: start the shown season's
+     * translation once per (season, language) when its episode rows report a
+     * missing description, then re-read the episodes until none does.
+     */
+    fun translateShownSeasonEpisodes() {
+        val state = _uiState.value
+        val detail = state.detail ?: return
+        val seriesId = if (detail.type == "series") detail.contentId else detail.seriesId ?: return
+        val seasonNumber = state.selectedSeasonNumber
+        val season = state.seasons.firstOrNull { it.seasonNumber == seasonNumber } ?: return
+        val target = state.episodes
+            .filter { it.seasonNumber == seasonNumber }
+            .pendingEpisodeTranslationLanguage() ?: return
+        // A season switched to while another season's job polls is retried
+        // when that job ends (below), rather than latched as already fired.
+        if (!episodeTranslation.claimAutoFire(season.contentId, target)) return
+        episodeTranslation.resetFailure()
+        viewModelScope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
+            episodeTranslation.translate(
+                contentId = season.contentId,
+                targetLanguage = target,
+                refetchPendingLanguage = { owner ->
+                    val rebuildGeneration = episodeRebuildGenerations[seasonNumber] ?: 0L
+                    when (
+                        val result = catalogRepository.getEpisodes(
+                            seriesId,
+                            seasonNumber,
+                            libraryId = libraryId,
+                            fresh = true,
+                        )
+                    ) {
+                        is ApiResult.Success -> if (metadataAiRepository.isCurrent(owner)) {
+                            val episodes = withLocalProgress(result.data.episodes)
+                            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                            if (metadataAiRepository.isCurrent(owner) &&
+                                rebuildGeneration == (episodeRebuildGenerations[seasonNumber] ?: 0L)
+                            ) {
+                                cacheTranslatedEpisodes(seasonNumber, episodes)
+                                episodes.pendingEpisodeTranslationLanguage()
+                            } else target
+                        } else {
+                            target
+                        }
+                        else -> target // transient refetch failure: keep polling
+                    }
+                },
+                onTranslated = {},
+            )
+            if (episodeTranslation.takeDeferredAuto()) translateShownSeasonEpisodes()
+        }
+    }
+
+    /**
      * Toggles the watchlist state for this item.
      */
     fun toggleWatchlist() {
@@ -1416,7 +1519,7 @@ class ItemDetailViewModel(
                         failedEpisodeWatchedGenerations[it.contentId] == latest)
             }
             .associateBy { it.contentId }
-        fun List<EpisodeListItem>.restored() = map { previousById[it.contentId] ?: it }
+        fun List<EpisodeListItem>.restored() = map { previousById[it.contentId]?.withTranslatedDescription(it) ?: it }
         _uiState.update { state ->
             val episodesBySeason = if (previousEpisodes != null) {
                 state.episodesBySeason.mapValues { (number, episodes) ->
@@ -1448,15 +1551,16 @@ class ItemDetailViewModel(
      * stale so selecting them later loads fresh checkmarks.
      */
     private fun refreshAfterSeasonWatchedChange(seriesId: String, changedSeasonNumber: Int?) {
-        _uiState.update { state ->
-            state.copy(
-                episodesBySeason = state.episodesBySeason.filterKeys { number ->
-                    // The loaded page is the fallback if the selected season's reload fails.
-                    number == state.selectedSeasonNumber || number == loadedSeasonNumber ||
-                        (changedSeasonNumber != null && number != changedSeasonNumber)
-                },
-            )
+        val state = _uiState.value
+        val retained = state.episodesBySeason.filterKeys { number ->
+            // The loaded page is the fallback if the selected season's reload fails.
+            number == state.selectedSeasonNumber || number == loadedSeasonNumber ||
+                (changedSeasonNumber != null && number != changedSeasonNumber)
         }
+        (state.episodesBySeason.keys - retained.keys).forEach { number ->
+            episodeRebuildGenerations[number] = (episodeRebuildGenerations[number] ?: 0L) + 1
+        }
+        _uiState.update { it.copy(episodesBySeason = retained) }
         // Re-reads the series hero, the season list, and the visible episodes.
         quietRefresh(afterWatchedChange = true)
     }
