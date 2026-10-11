@@ -2,6 +2,11 @@
 
 package org.siloserver.silo.android.di
 
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onEach
 import org.siloserver.silo.common.downloads.DownloadEnqueuer
 import org.siloserver.silo.common.downloads.DownloadSubscriptionEvaluatorFactory
 import org.siloserver.silo.common.downloads.DownloadSubscriptionWorker
@@ -89,6 +94,7 @@ import org.siloserver.silo.android.cast.SharedPrefsSiloCastLastTargetStore
 import org.siloserver.silo.android.cast.SiloCastController
 import org.siloserver.silo.android.cast.SiloCastLastTargetStore
 import org.siloserver.silo.android.cast.SiloCastSessionManager
+import org.siloserver.silo.android.cast.SiloCastState
 import org.koin.android.ext.koin.androidContext
 import org.koin.androidx.workmanager.dsl.worker
 import org.koin.core.module.dsl.viewModel
@@ -534,6 +540,38 @@ val androidModule = module {
     single {
         org.siloserver.silo.android.auth.ProfileSwitchTeardown(get(), get(), get(), get(), get(), get(), get())
     }
+    // Profile Selection (Apple Settings → General → Profile Selection): the
+    // choice kept on this device, the tracker MainActivity drives from
+    // onStop/onStart, and the reset that drops the active profile when it asks.
+    single {
+        org.siloserver.silo.common.profiles.ProfileLaunchPreferences(
+            androidContext(),
+            org.siloserver.silo.common.profiles.ProfileLaunchPreferences.PHONE_PREFS_NAME,
+        )
+    }
+    single {
+        val cast = get<SiloCastSessionManager>()
+        // Casting counts as use only while the receiver plays (a rebuffer
+        // included): a session left connected after a pause or the end of a
+        // title does not hold the profile.
+        fun SiloCastState.castPlaying() = isConnected && isPlaybackActive
+        org.siloserver.silo.common.profiles.ProfileAwayTracker(
+            get(),
+            get(),
+            isCasting = { cast.castState.value.castPlaying() },
+        ).also { tracker ->
+            // Cast playback that stops or disconnects while Silo is hidden
+            // starts the away clock then, as a local player's stop does.
+            cast.castState.map { it.castPlaying() }.distinctUntilChanged().drop(1)
+                .onEach { tracker.onRemotePlaybackChanged() }
+                .launchIn(
+                    kotlinx.coroutines.CoroutineScope(
+                        kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Main.immediate,
+                    ),
+                )
+        }
+    }
+    single { org.siloserver.silo.android.auth.ActiveProfileReset(get(), get(), get(), get(), get(), get(), get(), get(), get()) }
     viewModel { SettingsViewModel(get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get()) }
     viewModel { DiagnosticsViewModel(get()) }
     viewModel { DownloadsViewModel(get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get()) }
@@ -553,7 +591,7 @@ val androidModule = module {
     viewModel { ProfileSelectionViewModel(get(), get(), profileVerificationRecovery = getOrNull()) }
     viewModel { CreateProfileViewModel(get()) }
     viewModel { EditProfileViewModel(get()) }
-    viewModel { ServerListViewModel(get(), get(), get()) }
+    viewModel { ServerListViewModel(get(), get(), get(), get()) }
     viewModel { params ->
         val args = params.get<Pair<String?, String?>>()
         val authRepository = get<org.siloserver.silo.repository.AuthRepository>()

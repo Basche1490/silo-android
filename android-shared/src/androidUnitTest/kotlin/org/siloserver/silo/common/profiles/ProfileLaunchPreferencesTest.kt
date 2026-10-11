@@ -1,6 +1,7 @@
-package org.siloserver.silo.tv.data.preferences
+package org.siloserver.silo.common.profiles
 
 import android.content.SharedPreferences
+import org.siloserver.silo.common.player.ActivePlayerHolder
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -12,7 +13,7 @@ import kotlin.test.assertTrue
  * `ProfileLaunchPolicyTests`: when Who's Watching is required, and when the
  * launcher's Watch Next row may show the active profile.
  */
-class TvProfileLaunchPreferencesTest {
+class ProfileLaunchPreferencesTest {
 
     private val hour = 60 * 60 * 1000L
     private val start = 1_000_000_000L
@@ -101,31 +102,31 @@ class TvProfileLaunchPreferencesTest {
     fun `the choice and the away interval survive a process restart`() {
         val prefs = InMemoryPrefs()
         var now = start
-        val first = TvProfileLaunchPreferences(prefs) { now }
+        val first = ProfileLaunchPreferences(prefs) { now }
         first.setBehavior(ProfileLaunchBehavior.AfterOneHour)
         first.markBackgrounded()
 
         now = start + hour
-        val restarted = TvProfileLaunchPreferences(prefs) { now }
+        val restarted = ProfileLaunchPreferences(prefs) { now }
         assertEquals(ProfileLaunchBehavior.AfterOneHour, restarted.state.value.behavior)
         assertEquals(start, restarted.state.value.backgroundedAtMs)
         assertTrue(restarted.requiresSelectionAtLaunch())
 
         restarted.clearBackgroundedAt()
-        assertFalse(TvProfileLaunchPreferences(prefs) { now }.requiresSelectionAtLaunch())
+        assertFalse(ProfileLaunchPreferences(prefs) { now }.requiresSelectionAtLaunch())
     }
 
     @Test
     fun `a new TV asks who's watching and offers to remember the first profile`() {
         val prefs = InMemoryPrefs()
-        val store = TvProfileLaunchPreferences(prefs) { start }
+        val store = ProfileLaunchPreferences(prefs) { start }
         store.settleFirstLaunch(hasRememberedProfile = false)
 
         assertEquals(ProfileLaunchBehavior.EveryTime, store.state.value.behavior)
         assertTrue(store.isRememberOfferPending)
         assertTrue(store.requiresSelectionAtLaunch())
         // Later launches keep what was saved.
-        val next = TvProfileLaunchPreferences(prefs) { start }
+        val next = ProfileLaunchPreferences(prefs) { start }
         next.settleFirstLaunch(hasRememberedProfile = true)
         assertEquals(ProfileLaunchBehavior.EveryTime, next.state.value.behavior)
         assertTrue(next.isRememberOfferPending)
@@ -134,9 +135,9 @@ class TvProfileLaunchPreferencesTest {
     @Test
     fun `a TV that already opens a profile keeps Automatic and gets no offer`() {
         val prefs = InMemoryPrefs()
-        TvProfileLaunchPreferences(prefs) { start }.settleFirstLaunch(hasRememberedProfile = true)
+        ProfileLaunchPreferences(prefs) { start }.settleFirstLaunch(hasRememberedProfile = true)
 
-        val restarted = TvProfileLaunchPreferences(prefs) { start }
+        val restarted = ProfileLaunchPreferences(prefs) { start }
         assertEquals(ProfileLaunchBehavior.Automatic, restarted.state.value.behavior)
         assertFalse(restarted.isRememberOfferPending)
         assertFalse(restarted.requiresSelectionAtLaunch())
@@ -146,11 +147,11 @@ class TvProfileLaunchPreferencesTest {
     fun `the offer is answered once and the answer is kept`() {
         for (remember in listOf(true, false)) {
             val prefs = InMemoryPrefs()
-            TvProfileLaunchPreferences(prefs) { start }.apply {
+            ProfileLaunchPreferences(prefs) { start }.apply {
                 settleFirstLaunch(hasRememberedProfile = false)
                 answerRememberOffer(remember)
             }
-            val restarted = TvProfileLaunchPreferences(prefs) { start }
+            val restarted = ProfileLaunchPreferences(prefs) { start }
             assertFalse(restarted.isRememberOfferPending)
             assertEquals(
                 if (remember) ProfileLaunchBehavior.Automatic else ProfileLaunchBehavior.EveryTime,
@@ -162,10 +163,38 @@ class TvProfileLaunchPreferencesTest {
     @Test
     fun `choosing in Settings ends the offer`() {
         val prefs = InMemoryPrefs()
-        val store = TvProfileLaunchPreferences(prefs) { start }
+        val store = ProfileLaunchPreferences(prefs) { start }
         store.settleFirstLaunch(hasRememberedProfile = false)
         store.setBehavior(ProfileLaunchBehavior.AfterOneHour)
-        assertFalse(TvProfileLaunchPreferences(prefs) { start }.isRememberOfferPending)
+        assertFalse(ProfileLaunchPreferences(prefs) { start }.isRememberOfferPending)
+    }
+
+    @Test
+    fun `Cast that stops while Silo is hidden starts the away clock, so Every Time asks`() {
+        val store = ProfileLaunchPreferences(InMemoryPrefs()) { start }
+        store.setBehavior(ProfileLaunchBehavior.EveryTime)
+        var casting = true
+        val tracker = ProfileAwayTracker(store, ActivePlayerHolder(), isCasting = { casting })
+
+        tracker.onBackground()
+        assertNull(store.state.value.backgroundedAtMs)
+
+        casting = false
+        tracker.onRemotePlaybackChanged()
+        assertEquals(start, store.state.value.backgroundedAtMs)
+
+        tracker.onForeground()
+        assertTrue(tracker.selectionRequired.value)
+    }
+
+    @Test
+    fun `a Cast change while Silo is in use starts no away clock`() {
+        val store = ProfileLaunchPreferences(InMemoryPrefs()) { start }
+        store.setBehavior(ProfileLaunchBehavior.EveryTime)
+        val tracker = ProfileAwayTracker(store, ActivePlayerHolder(), isCasting = { false })
+
+        tracker.onRemotePlaybackChanged()
+        assertNull(store.state.value.backgroundedAtMs)
     }
 }
 
