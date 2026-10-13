@@ -2,12 +2,17 @@ package org.siloserver.silo.repository
 
 import org.siloserver.silo.model.request.CreateMediaRequest
 import org.siloserver.silo.model.request.MediaRequest
+import org.siloserver.silo.model.request.RequestFollowEvent
 import org.siloserver.silo.model.request.RequestMediaDetail
 import org.siloserver.silo.model.request.RequestMediaPage
+import org.siloserver.silo.model.request.RequestState
 import org.siloserver.silo.model.request.RequestsDiscoverResponse
 import org.siloserver.silo.model.request.RequestsFeatureStatus
+import org.siloserver.silo.model.request.applyingFollow
+import org.siloserver.silo.model.request.applyingFollowUpdate
 import org.siloserver.silo.network.ApiResult
 import org.siloserver.silo.network.api.RequestsApi
+import org.siloserver.silo.network.map
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeMark
@@ -56,6 +61,13 @@ class RequestsRepository(
     /** The most recent create or cancel of the signed-in user's own request. */
     val lastUpdate: StateFlow<RequestEvent?> = _lastUpdate.asStateFlow()
 
+    private val _lastFollow = MutableStateFlow<RequestFollowEvent?>(null)
+    /** The most recent follow or unfollow, so cards and pages showing the title agree. */
+    val lastFollow: StateFlow<RequestFollowEvent?> = _lastFollow.asStateFlow()
+
+    /** Each title's latest follow or unfollow this session, for reads that were out when it landed. */
+    private val follows = mutableMapOf<RequestDetailCache.Key, RequestFollowEvent>()
+
     suspend fun status(): ApiResult<RequestsFeatureStatus> = api.status()
 
     suspend fun discover(): ApiResult<RequestsDiscoverResponse> = api.discover()
@@ -70,7 +82,7 @@ class RequestsRepository(
     ): ApiResult<RequestMediaPage> = api.search(query, mediaType, page)
 
     suspend fun detail(mediaType: String, tmdbId: Int): ApiResult<RequestMediaDetail> =
-        read({ api.detail(mediaType, tmdbId) }) { cache.store(it) }
+        read({ fetchDetail(mediaType, tmdbId) }) { cache.store(it) }
 
     suspend fun get(id: String): ApiResult<MediaRequest> = api.get(id)
 
@@ -121,9 +133,16 @@ class RequestsRepository(
     suspend fun cancel(id: String): ApiResult<MediaRequest> =
         mutate({ api.cancel(id) }, ::publish)
 
+    /** Get notified when a title someone else requested becomes available. */
+    suspend fun follow(mediaType: String, tmdbId: Int): ApiResult<RequestState> =
+        mutate({ api.follow(mediaType, tmdbId) }) { publishFollow(mediaType, tmdbId, following = true, state = it) }
+
+    suspend fun unfollow(mediaType: String, tmdbId: Int): ApiResult<Unit> =
+        mutate({ api.unfollow(mediaType, tmdbId) }) { publishFollow(mediaType, tmdbId, following = false, state = null) }
+
     /** Warms the first rows' details so opening them lands on a finished page. */
     fun prefetch(records: List<MediaRequest>) {
-        cache.prefetch(records) { key -> api.detail(key.mediaType, key.tmdbId) }
+        cache.prefetch(records) { key -> fetchDetail(key.mediaType, key.tmdbId) }
     }
 
     fun reset() {
@@ -131,6 +150,8 @@ class RequestsRepository(
         mineReadAt = null
         _mine.value = emptyList()
         _lastUpdate.value = null
+        _lastFollow.value = null
+        follows.clear()
         cache.clear()
     }
 
@@ -165,6 +186,33 @@ class RequestsRepository(
         cache.storeOwnRecord(request)
         _lastUpdate.value = RequestEvent(request, ++eventSequence)
     }
+
+    private fun publishFollow(mediaType: String, tmdbId: Int, following: Boolean, state: RequestState?) {
+        val key = RequestDetailCache.Key(mediaType, tmdbId)
+        val event = RequestFollowEvent(mediaType, tmdbId, following, state, ++eventSequence)
+        follows[key] = event
+        cache.patchRequestState(key) { it.applyingFollow(event) }
+        _lastFollow.value = event
+    }
+
+    /**
+     * The title's detail with the follows and unfollows that landed while the
+     * read was out: one sent before a follow can answer after it, and must not
+     * bring back the state the follow replaced.
+     */
+    private suspend fun fetchDetail(mediaType: String, tmdbId: Int): ApiResult<RequestMediaDetail> {
+        val since = eventSequence
+        return api.detail(mediaType, tmdbId).map { it.withFollowsAfter(since) }
+    }
+
+    private fun RequestMediaDetail.withFollowsAfter(since: Long): RequestMediaDetail =
+        follows.values.filter { it.sequence > since }.fold(this) { detail, event ->
+            val own = event.mediaType == detail.mediaType && event.tmdbId == detail.tmdbId
+            detail.copy(
+                request = if (own) detail.request.applyingFollow(event) else detail.request,
+                recommendations = detail.recommendations.applyingFollowUpdate(event),
+            )
+        }
 
     private fun upsertMine(request: MediaRequest) {
         _mine.update { list ->
