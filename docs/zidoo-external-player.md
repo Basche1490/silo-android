@@ -19,6 +19,11 @@ Silo still tracks the playback:
 - **Audio and subtitles.** Your audio choice carries over. A subtitle carries
   over when it is embedded in the file; anything else is left to the Zidoo
   player's own language settings.
+- **The file as it is.** Silo asks the server to plan for the Zidoo player,
+  not for Silo's own player, so the server sends the original file: DTS,
+  TrueHD, Blu-ray `.m2ts`, VC-1 and Dolby Vision Profile 7 included. The
+  Zidoo player then does what it always does, for example decoding DTS to PCM
+  for a TV without DTS, as its own audio settings say.
 
 Watch Party, Shuffle and casting from a phone keep using Silo's built-in
 player. If a server administrator ends the session, Silo stops the Zidoo
@@ -52,8 +57,8 @@ substitution rules.
 ### Optional: play from your network share
 
 A PlexToZidoo path substitution makes the Zidoo player open the file over SMB
-or NFS instead of streaming it from Silo. It is also the only way to play a
-file Silo's server would convert for this player (see Known limits). Rules
+or NFS instead of streaming it from Silo. It is also the way to play a file
+the server still converts (see Known limits). Rules
 need a Silo account that can see file paths: an admin, or an account with the
 Metadata curation permission.
 
@@ -165,7 +170,13 @@ Edits to Silo's own files, each marked `[zidoo-fork]` (`git grep "\[zidoo-fork\]
 ## How it works
 
 A hand-off starts a normal Silo playback session (asking for original
-quality), because that session is how Silo records progress. Silo opens
+quality), because that session is how Silo records progress. The session is
+planned for the Zidoo player: Silo's detected capabilities, widened to every
+common audio codec with no channel limit, the Blu-ray and DVD codecs and
+containers, and the server's `client_managed_dynamic_range_v1` claim (the
+player presents HDR and Dolby Vision itself). Without that, the server would
+plan for Silo's own player and the TV's audio input, and convert for example
+a 5.1 DTS track for a TV that takes only stereo PCM. Silo opens
 PlexToZidoo in its ZDMC mode with the file's server path and, when the server
 planned to send the original file, the session's stream URL signed in with
 `token=` in its query string (the way Plex links carry `X-Plex-Token`).
@@ -186,13 +197,14 @@ firmware only lets a couple of apps stay in the background.
   on the server are not available to it.
 - If Silo's process is killed during playback despite the foreground service,
   the resume point is the last one saved, at most about ten seconds earlier.
-- The server plans the session for what Silo detects this box can decode. If
-  it decides the file needs a transcode or remux (for example lossless audio
-  with no AV receiver detected), there is no original-file stream to send, so
-  the file plays only through a PlexToZidoo path substitution. The transcode
-  the server starts is never used; its throttling pauses it after about five
-  minutes of output, but it holds one of your server's transcode slots until
-  playback ends.
+- The server can still convert a file the Zidoo player could play: when
+  Silo's own playback settings cap the bitrate, for a codec outside the list
+  above (AV1 or VP9 on a box whose decoder Silo didn't detect), or when the
+  server's administrator settings force it. There is then no original-file
+  stream to send, so the file plays only through a PlexToZidoo path
+  substitution, and Silo says so. The transcode the server starts is never
+  used; its throttling pauses it after about five minutes of output, but it
+  holds one of your server's transcode slots until playback ends.
 - The stream link carries your Silo sign-in, which lasts 8 hours by default.
   PlexToZidoo's debug screen shows the link, so don't share a photo of it. If
   the sign-in expires during a long film, seeking after that point fails and

@@ -26,6 +26,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.siloserver.silo.common.player.PlaybackSessionLifecycle
 import org.siloserver.silo.common.player.PlaybackSessionManager
+import org.siloserver.silo.common.player.StartParams
 import org.siloserver.silo.common.player.resolvePlaybackStreamUrl
 import org.siloserver.silo.common.player.external.ExternalPlayerSettings
 import org.siloserver.silo.common.player.external.PlexToZidooLaunch
@@ -138,6 +139,12 @@ class ZidooHandoffCoordinator(
     private val endNoticeDelayMs: Long = 5_000L,
     private val newMonitor: (ZidooPlayerApi, ZidooSkipPlanner) -> ZidooPlaybackMonitor =
         { api, planner -> ZidooPlaybackMonitor(api, planner) },
+    /**
+     * The capabilities the session is planned for: the Zidoo player's rather
+     * than Silo's own, so the server sends the file untouched. Null, or a
+     * failure, plans for Silo's player as the starter normally does.
+     */
+    private val zidooStartParams: suspend (VideoPlaybackStartRequest) -> StartParams? = { null },
 ) {
     private val _state = MutableStateFlow<ZidooHandoffState>(ZidooHandoffState.Idle)
     val state: StateFlow<ZidooHandoffState> = _state.asStateFlow()
@@ -257,7 +264,7 @@ class ZidooHandoffCoordinator(
             // Checked first, so a box without PlexToZidoo never opens a server session.
             if (!plexToZidooInstalled()) return fail(runId, NOT_INSTALLED_MESSAGE, canPlayInSilo = true)
 
-            val ready = when (val result = starter.start(request)) {
+            val ready = when (val result = starter.start(withZidooCapabilities(request))) {
                 is VideoPlaybackStartResult.Ready -> result
                 is VideoPlaybackStartResult.Error -> return fail(runId, result.message, canPlayInSilo = true)
                 is VideoPlaybackStartResult.ServerUnreachable ->
@@ -460,6 +467,19 @@ class ZidooHandoffCoordinator(
         notPlayed: ZidooHandoffState.NotPlayed? = null,
     ) =
         setState(runId, ZidooHandoffState.Failed(runId, message, canPlayInSilo, notPlayed))
+
+    /** [request] planned for the Zidoo player's capabilities, when they can be worked out. */
+    private suspend fun withZidooCapabilities(request: VideoPlaybackStartRequest): VideoPlaybackStartRequest {
+        val params = try {
+            zidooStartParams(request)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not describe the Zidoo player; planning for Silo's player", e)
+            null
+        }
+        return if (params != null) request.copy(recoveryStartParams = params) else request
+    }
 
     /**
      * Silo's stream of the original file, signed in through its query string

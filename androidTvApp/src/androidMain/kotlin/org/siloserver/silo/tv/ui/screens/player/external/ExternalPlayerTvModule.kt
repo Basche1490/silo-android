@@ -30,7 +30,9 @@ val externalPlayerTvModule = module {
         )
     }
     single<ZidooPlayerApi> { HttpZidooPlayerApi() }
+    single { ZidooStartParams(detector = get(), playerSettings = get()) }
     single {
+        val startParams = get<ZidooStartParams>()
         ZidooHandoffCoordinator(
             appContext = androidContext(),
             starter = get(named("tvVideoPlaybackStarter")),
@@ -41,6 +43,9 @@ val externalPlayerTvModule = module {
             // Zidoo playback is playback on another screen: tell the profile
             // tracker when it pauses, resumes or ends, as the phone does for Cast.
             onPlaybackActivityChanged = { get<ProfileAwayTracker>().onRemotePlaybackChanged() },
+            // Plan for the Zidoo player, so the server sends the file untouched
+            // instead of converting it for Silo's own player.
+            zidooStartParams = startParams::forRequest,
         )
     }
 }
