@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import org.siloserver.silo.common.player.PlaybackSessionLifecycle
 import org.siloserver.silo.common.player.PlaybackSessionManager
@@ -35,6 +36,7 @@ import org.siloserver.silo.common.player.external.ZidooMonitorOutcome
 import org.siloserver.silo.common.player.external.ZidooPlaybackMonitor
 import org.siloserver.silo.common.player.external.ZidooPlayerApi
 import org.siloserver.silo.common.player.external.ZidooSkipPlanner
+import org.siloserver.silo.common.player.external.ZidooStreamRelay
 import org.siloserver.silo.common.player.external.ZidooTrackMapping
 import org.siloserver.silo.common.player.external.settledPositionMs
 import org.siloserver.silo.common.player.video.VideoPlaybackStartRequest
@@ -145,6 +147,8 @@ class ZidooHandoffCoordinator(
      * failure, plans for Silo's player as the starter normally does.
      */
     private val zidooStartParams: suspend (VideoPlaybackStartRequest) -> StartParams? = { null },
+    private val newRelay: (upstream: String, fileName: String, accessToken: () -> String?) -> ZidooStreamRelay =
+        { upstream, fileName, accessToken -> ZidooStreamRelay(upstream, fileName, accessToken) },
 ) {
     private val _state = MutableStateFlow<ZidooHandoffState>(ZidooHandoffState.Idle)
     val state: StateFlow<ZidooHandoffState> = _state.asStateFlow()
@@ -260,6 +264,7 @@ class ZidooHandoffCoordinator(
         var sessionId: String? = null
         var sessionClosed = false
         var launched = false
+        var relay: ZidooStreamRelay? = null
         try {
             // Checked first, so a box without PlexToZidoo never opens a server session.
             if (!plexToZidooInstalled()) return fail(runId, NOT_INSTALLED_MESSAGE, canPlayInSilo = true)
@@ -280,8 +285,8 @@ class ZidooHandoffCoordinator(
             val fileId = ready.fileId ?: ready.mediaFileId
             val version = ready.versions.firstOrNull { it.fileId == fileId }
             val path = version?.filePath?.takeIf { it.isNotBlank() }
-            val streamUrl = originalStreamUrl(ready)
-            if (path == null && streamUrl == null) return fail(runId, NO_PATH_MESSAGE, canPlayInSilo = true)
+            val upstream = originalStreamUpstream(ready)
+            if (path == null && upstream == null) return fail(runId, NO_PATH_MESSAGE, canPlayInSilo = true)
 
             // The starter leaves the session unpublished until its owner takes
             // it; confirm it, as the built-in player does once it has mounted.
@@ -294,6 +299,14 @@ class ZidooHandoffCoordinator(
             // here: Back pressed during the confirm must not open PlexToZidoo.
             currentCoroutineContext().ensureActive()
             if (!confirmed) return fail(runId, "Playback could not be started. Try again.", canPlayInSilo = true)
+
+            // The Zidoo player reaches the stream through the relay, which
+            // signs each request with the current token; the direct link with
+            // the token in it is only for a box where the relay cannot start.
+            relay = upstream?.let { startRelay(it, path, ready) }
+            val directLink = upstream?.takeIf { ready.accessToken.isNotBlank() }
+                ?.let { PlexToZidooLaunch.withQueryParameter(it, "token", ready.accessToken) }
+            val streamUrl = relay?.url ?: directLink
 
             val subtitleTracks = version?.subtitleTracks.orEmpty()
             val title = displayTitle(ready)
@@ -392,7 +405,7 @@ class ZidooHandoffCoordinator(
                     canPlayInSilo = true,
                     notPlayed = ZidooHandoffState.NotPlayed(
                         serverPath = path,
-                        streamOrigin = streamUrl?.let { originOf(it) },
+                        streamOrigin = upstream?.takeIf { streamUrl != null }?.let { originOf(it) },
                     ),
                 )
                 is ZidooMonitorOutcome.Finished -> {
@@ -418,6 +431,7 @@ class ZidooHandoffCoordinator(
             Log.e(TAG, "Zidoo hand-off failed", e)
             fail(runId, "Something went wrong handing playback to the Zidoo player.", canPlayInSilo = true)
         } finally {
+            relay?.close()
             launcher.set(null)
             val unclosed = sessionId?.takeUnless { sessionClosed }
             if (unclosed != null) withContext(NonCancellable) { retire(unclosed) }
@@ -482,21 +496,31 @@ class ZidooHandoffCoordinator(
     }
 
     /**
-     * Silo's stream of the original file, signed in through its query string
-     * so the Zidoo player can open it without Silo's headers, the way Plex's
-     * links carry the Plex token. Null when the server planned anything but
-     * the original file (a remux or transcode would need Silo's own player),
-     * or routed it through a node that needs extra headers.
+     * Silo's stream of the original file, as the plan names it (with its signed
+     * `st` reference, without a sign-in). Null when the server planned anything
+     * but the original file (a remux or transcode would need Silo's own
+     * player), or routed it through a node that needs extra headers.
      */
-    private fun originalStreamUrl(ready: VideoPlaybackStartResult.Ready): String? {
+    private fun originalStreamUpstream(ready: VideoPlaybackStartResult.Ready): String? {
         val original = ready.playMethod == PlayMethod.DIRECT &&
             (ready.delivery == null || ready.delivery == PlaybackDelivery.ORIGINAL_HTTP)
         if (!original || ready.requestHeaders.isNotEmpty()) return null
-        val token = ready.accessToken.takeIf { it.isNotBlank() } ?: return null
         val url = resolvePlaybackStreamUrl(ready.serverUrl, ready.streamUrl)
-        if (!url.startsWith("http://", ignoreCase = true) && !url.startsWith("https://", ignoreCase = true)) return null
-        return PlexToZidooLaunch.withQueryParameter(url, "token", token)
+        return url.takeIf { it.startsWith("http://", ignoreCase = true) || it.startsWith("https://", ignoreCase = true) }
     }
+
+    /** Starts the relay for [upstream]; null, and a log line, when this box will not let it listen. */
+    private fun startRelay(upstream: String, path: String?, ready: VideoPlaybackStartResult.Ready): ZidooStreamRelay? =
+        try {
+            newRelay(upstream, ZidooStreamRelay.fileNameFor(path, ready.container)) {
+                // Read on each request, so a token the app renewed during the
+                // film is used as soon as it exists.
+                runBlocking { sessionManager.getAccessToken() } ?: ready.accessToken
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not start the stream relay; giving the Zidoo player a direct link", e)
+            null
+        }
 
     private fun displayTitle(ready: VideoPlaybackStartResult.Ready): String {
         val series = ready.seriesTitle?.takeIf { it.isNotBlank() }

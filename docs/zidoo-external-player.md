@@ -176,16 +176,26 @@ common audio codec with no channel limit, the Blu-ray and DVD codecs and
 containers, and the server's `client_managed_dynamic_range_v1` claim (the
 player presents HDR and Dolby Vision itself). Without that, the server would
 plan for Silo's own player and the TV's audio input, and convert for example
-a 5.1 DTS track for a TV that takes only stereo PCM. Silo opens
-PlexToZidoo in its ZDMC mode with the file's server path and, when the server
-planned to send the original file, the session's stream URL signed in with
-`token=` in its query string (the way Plex links carry `X-Plex-Token`).
-PlexToZidoo plays the share location when one of its substitution rules
-matches the path, and the stream URL otherwise. Silo then polls `http://127.0.0.1:9529/ZidooVideoPlay/getPlayStatus` once a
+a 5.1 DTS track for a TV that takes only stereo PCM.
+
+Silo then opens PlexToZidoo in its ZDMC mode with the file's server path and a
+stream address on the box itself, `http://127.0.0.1:<port>/<random>/video.mkv`
+(with the file's own extension). Behind that address is a small relay in
+Silo that forwards each request to the session's stream on your server,
+signed with Silo's current access token, the way Silo's own player signs
+its requests. The token never appears in the address, so PlexToZidoo's debug
+screen and the Zidoo player's history don't hold it, and a token the app
+renews during a long film is used from the next request. PlexToZidoo plays
+the share location when one of its substitution rules matches the path, and
+the relay's address otherwise. (On a box where the relay cannot start, Silo
+gives the Zidoo player the server's stream address with `token=` instead, as
+Plex links carry `X-Plex-Token`.)
+
+Silo polls `http://127.0.0.1:9529/ZidooVideoPlay/getPlayStatus` once a
 second, seeks with `ZidooVideoPlay/seekTo` to skip markers, reports progress
-to the session, and stops the session when the Zidoo player closes. A
-foreground service keeps Silo's process alive in the meantime, because Zidoo
-firmware only lets a couple of apps stay in the background.
+to the session, and stops the session and the relay when the Zidoo player
+closes. A foreground service keeps Silo's process alive in the meantime,
+because Zidoo firmware only lets a couple of apps stay in the background.
 
 ## Known limits
 
@@ -196,7 +206,9 @@ firmware only lets a couple of apps stay in the background.
   path substitution, not when it streams from Silo. Subtitles Silo downloaded
   on the server are not available to it.
 - If Silo's process is killed during playback despite the foreground service,
-  the resume point is the last one saved, at most about ten seconds earlier.
+  the resume point is the last one saved, at most about ten seconds earlier,
+  and a film streaming from Silo stops, because the relay lives in Silo. A
+  film playing from the share through a path substitution carries on.
 - The server can still convert a file the Zidoo player could play: when
   Silo's own playback settings cap the bitrate, for a codec outside the list
   above (AV1 or VP9 on a box whose decoder Silo didn't detect), or when the
@@ -205,10 +217,6 @@ firmware only lets a couple of apps stay in the background.
   substitution, and Silo says so. The transcode the server starts is never
   used; its throttling pauses it after about five minutes of output, but it
   holds one of your server's transcode slots until playback ends.
-- The stream link carries your Silo sign-in, which lasts 8 hours by default.
-  PlexToZidoo's debug screen shows the link, so don't share a photo of it. If
-  the sign-in expires during a long film, seeking after that point fails and
-  playback stops; Silo saves the position as usual.
-- Silo's streams have no file extension in their address. The Zidoo player
-  reads the format from the file itself; if it ever refuses a stream that Silo
-  plays, a path substitution plays the same file from the share.
+- Streaming goes through Silo on the box, which copies the film's bytes from
+  your server to the Zidoo player. A Zidoo handles a 4K remux's bitrate
+  easily, but it is one more hop than playing from the share.
