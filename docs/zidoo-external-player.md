@@ -17,8 +17,8 @@ Silo still tracks the playback:
   second and jumps over the intro and credits using the server's markers. Each
   marker is skipped once per playback, so seeking back into one plays it.
 - **Audio and subtitles.** Your audio choice carries over. A subtitle carries
-  over when it is embedded in the file; sidecar subtitle files are left to the
-  Zidoo player's own language settings.
+  over when it is embedded in the file; anything else is left to the Zidoo
+  player's own language settings.
 
 Watch Party, Shuffle and casting from a phone keep using Silo's built-in
 player. If a server administrator ends the session, Silo stops the Zidoo
@@ -35,38 +35,50 @@ remember the profile or change Profile Selection in Settings.
 - A Zidoo player with firmware 6.4.42 or later (the new Zidoo player API).
 - PlexToZidoo installed from its
   [releases page](https://github.com/bowlingbeeg/PlexToZidoo/releases).
-- The Zidoo player can open your media over SMB or NFS.
 - Zidoo *Quick settings → Playback → Play mode* set to **Single file**.
-- A Silo account that can see file paths: an admin, or an account with the
-  Metadata curation permission.
 
 ## Set up
 
-1. In **PlexToZidoo → Settings → Substitutions**, add a rule that turns a path
-   as Silo reports it into a location the Zidoo box can open. Silo reports the
-   path inside its own container, so with Silo's standard Docker setup paths
-   start with `/mnt/media`. For example, *Part of the path to replace*
-   `/mnt/media` and *Replaced with* `smb://192.168.1.20/video`, where `video`
-   is the NAS share that Silo's media folder points to. Add the SMB username
-   and password if the share needs them. Silo's paths usually differ from
-   Plex's, so rules made for Plex won't match; list both, comma-separated in
-   each field, or use *Add additional substitutions*. The Plex settings in
-   PlexToZidoo are not used.
-2. In **Silo → Settings → External Player**, turn on **Play in Zidoo Player**,
+1. In **Silo → Settings → External Player**, turn on **Play in Zidoo Player**,
    and choose whether to skip intros and credits automatically. Intro skipping
    starts on; credits skipping starts off, because on a film it jumps past any
    scene after the credits.
-3. Play something.
+2. Play something.
 
-If the Zidoo player doesn't play the file, Silo shows the exact path it sent,
-what to enter in PlexToZidoo, and a button that opens PlexToZidoo's settings.
-The Zidoo player saying it cannot open `no-path-substitution-matched` means no
-rule matched; an error with your share's address means the rule matched but the
-share, folder, or SMB sign-in is wrong. PlexToZidoo's *Debug data* setting also
-shows each path before playback starts.
+That is all most setups need. The Zidoo player streams the original file from
+your Silo server, as ZDMC streams from Plex, so PlexToZidoo needs no path
+substitution rules.
 
-If Silo cannot hand off at all (no file path, or PlexToZidoo missing), it says
-why and offers **Play in Silo**.
+### Optional: play from your network share
+
+A PlexToZidoo path substitution makes the Zidoo player open the file over SMB
+or NFS instead of streaming it from Silo. It is also the only way to play a
+file Silo's server would convert for this player (see Known limits). Rules
+need a Silo account that can see file paths: an admin, or an account with the
+Metadata curation permission.
+
+In **PlexToZidoo → Settings → Substitutions**, add a rule that turns a path as
+Silo reports it into a location the Zidoo box can open. Silo reports the path
+inside its own container, so with Silo's standard Docker setup paths start with
+`/mnt/media`. For example, *Part of the path to replace* `/mnt/media` and
+*Replaced with* `smb://192.168.1.20/video`, where `video` is the NAS share that
+Silo's media folder points to. Add the SMB username and password if the share
+needs them. Silo's paths usually differ from Plex's, so rules made for Plex
+won't match Silo's files, and those files keep streaming from Silo. To use both,
+list them comma-separated in each field, or use *Add additional substitutions*.
+The Plex settings in PlexToZidoo are not used.
+
+### When it doesn't play
+
+If the Zidoo player doesn't play the file, Silo says what it sent PlexToZidoo
+(the file's path and the Silo server it streams from), what to check, and
+offers a button that opens PlexToZidoo's settings. The Zidoo player saying it
+cannot open `no-path-substitution-matched` means Silo had no stream to offer
+and no rule matched. PlexToZidoo's *Debug data* setting shows what it plays
+before playback starts.
+
+If Silo cannot hand off at all (PlexToZidoo missing, or neither a stream nor a
+file path for the title), it says why and offers **Play in Silo**.
 
 ## Getting the APK, and staying up to date
 
@@ -154,9 +166,11 @@ Edits to Silo's own files, each marked `[zidoo-fork]` (`git grep "\[zidoo-fork\]
 
 A hand-off starts a normal Silo playback session (asking for original
 quality), because that session is how Silo records progress. Silo opens
-PlexToZidoo with the file's server path; PlexToZidoo applies its substitution
-rules and starts the Zidoo player. The session's own stream is never fetched.
-Silo then polls `http://127.0.0.1:9529/ZidooVideoPlay/getPlayStatus` once a
+PlexToZidoo in its ZDMC mode with the file's server path and, when the server
+planned to send the original file, the session's stream URL signed in with
+`token=` in its query string (the way Plex links carry `X-Plex-Token`).
+PlexToZidoo plays the share location when one of its substitution rules
+matches the path, and the stream URL otherwise. Silo then polls `http://127.0.0.1:9529/ZidooVideoPlay/getPlayStatus` once a
 second, seeks with `ZidooVideoPlay/seekTo` to skip markers, reports progress
 to the session, and stops the session when the Zidoo player closes. A
 foreground service keeps Silo's process alive in the meantime, because Zidoo
@@ -166,14 +180,23 @@ firmware only lets a couple of apps stay in the background.
 
 - The next episode does not start automatically when one finishes.
 - A multi-part film (CD1/CD2 files) plays only the part you start in.
-- Subtitles Silo downloaded on the server are not available to the Zidoo
-  player; embedded and sidecar files are.
+- Subtitles embedded in the file always work. Sidecar subtitle files next to
+  the video reach the Zidoo player only when it plays from the share through a
+  path substitution, not when it streams from Silo. Subtitles Silo downloaded
+  on the server are not available to it.
 - If Silo's process is killed during playback despite the foreground service,
   the resume point is the last one saved, at most about ten seconds earlier.
 - The server plans the session for what Silo detects this box can decode. If
   it decides the file needs a transcode or remux (for example lossless audio
-  with no AV receiver detected), it starts one that the Zidoo player never
-  uses. The server's throttling pauses it after about five minutes of output,
-  but it holds one of your server's transcode slots until playback ends. With
-  a receiver connected, or for files the box decodes directly, nothing extra
-  runs.
+  with no AV receiver detected), there is no original-file stream to send, so
+  the file plays only through a PlexToZidoo path substitution. The transcode
+  the server starts is never used; its throttling pauses it after about five
+  minutes of output, but it holds one of your server's transcode slots until
+  playback ends.
+- The stream link carries your Silo sign-in, which lasts 8 hours by default.
+  PlexToZidoo's debug screen shows the link, so don't share a photo of it. If
+  the sign-in expires during a long film, seeking after that point fails and
+  playback stops; Silo saves the position as usual.
+- Silo's streams have no file extension in their address. The Zidoo player
+  reads the format from the file itself; if it ever refuses a stream that Silo
+  plays, a path substitution plays the same file from the share.

@@ -26,6 +26,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.siloserver.silo.common.player.PlaybackSessionLifecycle
 import org.siloserver.silo.common.player.PlaybackSessionManager
+import org.siloserver.silo.common.player.resolvePlaybackStreamUrl
 import org.siloserver.silo.common.player.external.ExternalPlayerSettings
 import org.siloserver.silo.common.player.external.PlexToZidooLaunch
 import org.siloserver.silo.common.player.external.SkipRange
@@ -39,6 +40,8 @@ import org.siloserver.silo.common.player.video.VideoPlaybackStartRequest
 import org.siloserver.silo.common.player.video.VideoPlaybackStartResult
 import org.siloserver.silo.common.player.video.VideoPlaybackStarter
 import org.siloserver.silo.model.catalog.TimeRange
+import org.siloserver.silo.model.playback.PlayMethod
+import org.siloserver.silo.model.playback.PlaybackDelivery
 
 /** Where one hand-off to the Zidoo player stands. [runId] ties a state to the run that produced it. */
 sealed interface ZidooHandoffState {
@@ -66,13 +69,17 @@ sealed interface ZidooHandoffState {
         val message: String,
         /** True when the built-in player is a sensible next step. */
         val canPlayInSilo: Boolean,
-        /**
-         * The file path Silo gave PlexToZidoo, when the Zidoo player was asked
-         * to play it and did not. The screen shows it, because PlexToZidoo's
-         * path substitution must match it.
-         */
-        val serverPath: String? = null,
+        /** Set when the Zidoo player was asked to play and didn't, so the screen can say what was sent. */
+        val notPlayed: NotPlayed? = null,
     ) : ZidooHandoffState
+
+    /** What PlexToZidoo was given for a title the Zidoo player then didn't play. */
+    data class NotPlayed(
+        /** The file path its substitution rules were matched against, if Silo had one. */
+        val serverPath: String?,
+        /** Scheme, host and port of the Silo stream it plays when no rule matches, if one was sent. */
+        val streamOrigin: String?,
+    )
 }
 
 /** States during which the Zidoo player may be running on Silo's behalf. */
@@ -261,11 +268,13 @@ class ZidooHandoffCoordinator(
             sessionId = id
 
             // Checked before the session is confirmed, so this failure rolls
-            // the unpublished session back.
+            // the unpublished session back. Either is enough: PlexToZidoo
+            // plays the stream whenever none of its rules match the path.
             val fileId = ready.fileId ?: ready.mediaFileId
             val version = ready.versions.firstOrNull { it.fileId == fileId }
             val path = version?.filePath?.takeIf { it.isNotBlank() }
-                ?: return fail(runId, NO_PATH_MESSAGE, canPlayInSilo = true)
+            val streamUrl = originalStreamUrl(ready)
+            if (path == null && streamUrl == null) return fail(runId, NO_PATH_MESSAGE, canPlayInSilo = true)
 
             // The starter leaves the session unpublished until its owner takes
             // it; confirm it, as the built-in player does once it has mounted.
@@ -279,7 +288,7 @@ class ZidooHandoffCoordinator(
             currentCoroutineContext().ensureActive()
             if (!confirmed) return fail(runId, "Playback could not be started. Try again.", canPlayInSilo = true)
 
-            val subtitleTracks = version.subtitleTracks.orEmpty()
+            val subtitleTracks = version?.subtitleTracks.orEmpty()
             val title = displayTitle(ready)
             val intent = plexToZidooIntent(
                 PlexToZidooLaunch.Request(
@@ -288,7 +297,7 @@ class ZidooHandoffCoordinator(
                     startPositionMs = (ready.sourceStartPositionSeconds.coerceAtLeast(0.0) * 1000).toLong(),
                     audioIndex = ZidooTrackMapping.audioIndex(
                         siloAudioOrdinal = ready.playbackPlan?.selectedTracks?.audioIndex ?: ready.audioTrackIndex,
-                        audioTrackCount = version.audioTracks.orEmpty().size,
+                        audioTrackCount = version?.audioTracks.orEmpty().size,
                     ),
                     subtitleIndex = ZidooTrackMapping.subtitleIndex(
                         siloCombinedIndex = ready.playbackPlan?.selectedTracks?.subtitleIndex
@@ -296,8 +305,9 @@ class ZidooHandoffCoordinator(
                         externalTrackCount = subtitleTracks.count { it.external },
                         embeddedTrackCount = subtitleTracks.count { !it.external },
                     ),
+                    streamUrl = streamUrl,
                 ),
-            )
+            ) ?: return fail(runId, NO_PATH_MESSAGE, canPlayInSilo = true)
 
             val openPlexToZidoo = launcher.getAndSet(null)
             if (openPlexToZidoo == null || _state.value.runId != runId) return
@@ -369,8 +379,15 @@ class ZidooHandoffCoordinator(
                 }
             }
             when (outcome) {
-                ZidooMonitorOutcome.PlayerDidNotStart ->
-                    return fail(runId, PLAYER_DID_NOT_START_MESSAGE, canPlayInSilo = true, serverPath = path)
+                ZidooMonitorOutcome.PlayerDidNotStart -> return fail(
+                    runId,
+                    PLAYER_DID_NOT_START_MESSAGE,
+                    canPlayInSilo = true,
+                    notPlayed = ZidooHandoffState.NotPlayed(
+                        serverPath = path,
+                        streamOrigin = streamUrl?.let { originOf(it) },
+                    ),
+                )
                 is ZidooMonitorOutcome.Finished -> {
                     setState(runId, ZidooHandoffState.Saving(runId, title))
                     if (outcome.lastPositionMs > 0L) {
@@ -436,8 +453,30 @@ class ZidooHandoffCoordinator(
         if (_state.value.runId == runId) _state.value = state
     }
 
-    private fun fail(runId: Long, message: String, canPlayInSilo: Boolean, serverPath: String? = null) =
-        setState(runId, ZidooHandoffState.Failed(runId, message, canPlayInSilo, serverPath))
+    private fun fail(
+        runId: Long,
+        message: String,
+        canPlayInSilo: Boolean,
+        notPlayed: ZidooHandoffState.NotPlayed? = null,
+    ) =
+        setState(runId, ZidooHandoffState.Failed(runId, message, canPlayInSilo, notPlayed))
+
+    /**
+     * Silo's stream of the original file, signed in through its query string
+     * so the Zidoo player can open it without Silo's headers, the way Plex's
+     * links carry the Plex token. Null when the server planned anything but
+     * the original file (a remux or transcode would need Silo's own player),
+     * or routed it through a node that needs extra headers.
+     */
+    private fun originalStreamUrl(ready: VideoPlaybackStartResult.Ready): String? {
+        val original = ready.playMethod == PlayMethod.DIRECT &&
+            (ready.delivery == null || ready.delivery == PlaybackDelivery.ORIGINAL_HTTP)
+        if (!original || ready.requestHeaders.isNotEmpty()) return null
+        val token = ready.accessToken.takeIf { it.isNotBlank() } ?: return null
+        val url = resolvePlaybackStreamUrl(ready.serverUrl, ready.streamUrl)
+        if (!url.startsWith("http://", ignoreCase = true) && !url.startsWith("https://", ignoreCase = true)) return null
+        return PlexToZidooLaunch.withQueryParameter(url, "token", token)
+    }
 
     private fun displayTitle(ready: VideoPlaybackStartResult.Ready): String {
         val series = ready.seriesTitle?.takeIf { it.isNotBlank() }
@@ -466,16 +505,20 @@ class ZidooHandoffCoordinator(
          */
         fun isHandingOffNow(): Boolean = current?.isHandingOff() == true
 
-        fun plexToZidooIntent(request: PlexToZidooLaunch.Request): Intent =
-            Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(Uri.parse(PlexToZidooLaunch.buildUri(request)), "video/*")
+        /** The intent that opens PlexToZidoo for [request]; null when it has neither a path nor a stream. */
+        fun plexToZidooIntent(request: PlexToZidooLaunch.Request): Intent? {
+            val uri = PlexToZidooLaunch.buildUri(request) ?: return null
+            return Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(Uri.parse(uri), "video/*")
                 setClassName(PlexToZidooLaunch.PACKAGE_NAME, PlexToZidooLaunch.ACTIVITY_CLASS)
             }
+        }
 
         const val NO_PATH_MESSAGE =
-            "Your Silo server didn't share where this file is stored, so PlexToZidoo can't find it. " +
-                "Sign in with an account that can see file paths (an admin, or one with the " +
-                "Metadata curation permission)."
+            "Your Silo server would convert this file for this player rather than send the original, and " +
+                "it didn't share where the file is stored, so PlexToZidoo has nothing it can open. Sign in " +
+                "with an account that can see file paths (an admin, or one with the Metadata curation " +
+                "permission) and add a path substitution in PlexToZidoo."
 
         const val NOT_INSTALLED_MESSAGE =
             "PlexToZidoo isn't installed on this player. Install it from " +
@@ -484,10 +527,16 @@ class ZidooHandoffCoordinator(
         const val LAUNCH_REFUSED_MESSAGE =
             "Android wouldn't open PlexToZidoo. Open PlexToZidoo once by itself, then try again."
 
-        /** Shown with the file's path; the screen adds what to enter in PlexToZidoo. */
-        const val PLAYER_DID_NOT_START_MESSAGE =
-            "The Zidoo player didn't play this file. PlexToZidoo has to turn the path Silo sent into a " +
-                "network share the Zidoo can open. Silo sent:"
+        /** The screen adds what PlexToZidoo was given and what to check. */
+        const val PLAYER_DID_NOT_START_MESSAGE = "The Zidoo player didn't play this file."
+
+        /** `scheme://host[:port]` of [url], for telling the user which server the Zidoo player had to reach. */
+        internal fun originOf(url: String): String {
+            val schemeEnd = url.indexOf("://")
+            if (schemeEnd < 0) return url
+            val pathStart = url.indexOfAny(charArrayOf('/', '?', '#'), startIndex = schemeEnd + 3)
+            return if (pathStart < 0) url else url.substring(0, pathStart)
+        }
 
         /**
          * How long a run keeps waiting for the Zidoo player after Silo is back

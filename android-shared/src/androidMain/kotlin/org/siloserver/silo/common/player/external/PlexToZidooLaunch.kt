@@ -9,8 +9,10 @@ package org.siloserver.silo.common.player.external
  * Plex lookup entirely: it removes those parameters, applies the path
  * substitution rules configured in PlexToZidoo's own settings (server path to
  * an SMB/NFS location, plus credentials), and starts the Zidoo player at the
- * requested position. That is the contract the ZidooPlexMod Kodi add-on uses,
- * and this class produces the same shape.
+ * requested position. When no rule matches, the Zidoo player opens what is
+ * left of the URI once the parameters are removed. The ZidooPlexMod Kodi
+ * add-on leaves Plex's streaming link there, which is why it plays without
+ * any substitution rules; this class leaves Silo's stream there the same way.
  *
  * What PlexToZidoo reads, and how:
  * - `PlexToZidoo-ViewOffset`: start position in milliseconds (an Int).
@@ -19,6 +21,8 @@ package org.siloserver.silo.common.player.external
  * - `PlexToZidoo-SubtitleIndex`: Zidoo `subtitle_idx`, 1-based.
  * - `PlexToZidoo-Path`: the file path as the media server knows it, URL-decoded
  *   and then matched against the user's substitution rules.
+ * - `PlexToZidoo-PathMapped`: any value; play the rest of the URI as it is,
+ *   without substitution. Used when Silo has no file path to offer.
  *
  * Each value is matched with `[^&]+` and decoded with `URLDecoder`, so values
  * must be non-empty and percent-encoded. A literal `+` would decode to a space,
@@ -37,20 +41,31 @@ object PlexToZidooLaunch {
     private const val PARAM_PREFIX = "PlexToZidoo-"
 
     data class Request(
-        /** The file path exactly as Silo reports it; PlexToZidoo's rules match against this. */
-        val serverFilePath: String,
+        /**
+         * The file path exactly as Silo reports it; PlexToZidoo's rules match
+         * against this. Null when the server doesn't share paths with this account.
+         */
+        val serverFilePath: String?,
         val title: String,
         val startPositionMs: Long,
         /** Zidoo `audio_idx` (0-based), or null to let the Zidoo player choose. */
         val audioIndex: Int? = null,
         /** Zidoo `subtitle_idx` (1-based), or null to let the Zidoo player choose. */
         val subtitleIndex: Int? = null,
+        /**
+         * What the Zidoo player opens when no substitution rule matches: Silo's
+         * stream of the original file, with its credentials in the query
+         * string, as Plex's links carry the Plex token. Null leaves
+         * [UNMAPPED_PLACEHOLDER] there instead.
+         */
+        val streamUrl: String? = null,
     )
 
     /**
-     * Base of every launch URI. PlexToZidoo plays the base only when none of
-     * its substitution rules match the `Path` parameter, so the Zidoo player
-     * then fails on a name that says why, rather than playing something else.
+     * Base of a launch URI that has no [Request.streamUrl]. PlexToZidoo plays
+     * the base only when none of its substitution rules match the `Path`
+     * parameter, so the Zidoo player then fails on a name that says why,
+     * rather than playing something else.
      *
      * The base is deliberately not the file path. PlexToZidoo skips encoding
      * the substituted path whenever the base contains `/mnt/nfs/`, so a server
@@ -60,26 +75,47 @@ object PlexToZidooLaunch {
      */
     const val UNMAPPED_PLACEHOLDER = "/silo/no-path-substitution-matched"
 
-    /** The `ACTION_VIEW` data string for [request]. */
-    fun buildUri(request: Request): String {
+    /**
+     * The `ACTION_VIEW` data string for [request]. Needs a
+     * [Request.serverFilePath] or a [Request.streamUrl]; with neither there is
+     * nothing to play, and this returns null.
+     */
+    fun buildUri(request: Request): String? {
+        val path = request.serverFilePath?.takeIf { it.isNotBlank() }
+        val stream = request.streamUrl?.takeIf { it.isNotBlank() }
+        if (path == null && stream == null) return null
+        val base = stream ?: UNMAPPED_PLACEHOLDER
         val params = StringBuilder()
+        // A stream URL brings its own query string; PlexToZidoo strips its
+        // parameters with either separator and leaves that query intact.
+        var separator = if ('?' in base) '&' else '?'
 
         fun add(name: String, value: String) {
-            params.append(if (params.isEmpty()) '?' else '&')
+            params.append(separator)
                 .append(PARAM_PREFIX)
                 .append(name)
                 .append('=')
                 .append(value)
+            separator = '&'
         }
 
         add("ViewOffset", request.startPositionMs.coerceIn(0L, Int.MAX_VALUE.toLong()).toString())
         request.title.trim().takeIf { it.isNotEmpty() }?.let { add("Title", percentEncode(it, keepSlash = false)) }
         request.audioIndex?.takeIf { it >= 0 }?.let { add("AudioIndex", it.toString()) }
         request.subtitleIndex?.takeIf { it >= 1 }?.let { add("SubtitleIndex", it.toString()) }
-        add("Path", percentEncode(request.serverFilePath, keepSlash = true))
+        if (path != null) {
+            add("Path", percentEncode(path, keepSlash = true))
+        } else {
+            // No path to match rules against: play the stream as it is.
+            add("PathMapped", "1")
+        }
 
-        return UNMAPPED_PLACEHOLDER + params
+        return base + params
     }
+
+    /** [url] with `name=value` added to its query string, [value] percent-encoded. */
+    fun withQueryParameter(url: String, name: String, value: String): String =
+        url + (if ('?' in url) '&' else '?') + name + '=' + percentEncode(value, keepSlash = false)
 
     /**
      * Percent-encodes [value] as UTF-8, leaving only RFC 3986 unreserved

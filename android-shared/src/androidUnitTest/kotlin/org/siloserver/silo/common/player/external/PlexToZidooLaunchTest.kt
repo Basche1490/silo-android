@@ -4,6 +4,8 @@ import java.net.URLDecoder
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class PlexToZidooLaunchTest {
@@ -54,7 +56,7 @@ class PlexToZidooLaunchTest {
 
     @Test
     fun neverUsesAFileUriBecauseAndroidRefusesToSendOne() {
-        val uri = PlexToZidooLaunch.buildUri(PlexToZidooLaunch.Request("/media/a.mkv", "A", startPositionMs = 1))
+        val uri = assertNotNull(PlexToZidooLaunch.buildUri(PlexToZidooLaunch.Request("/media/a.mkv", "A", startPositionMs = 1)))
 
         // Android's FileUriExposedException check looks only at the scheme;
         // a scheme-less path passes it.
@@ -118,10 +120,65 @@ class PlexToZidooLaunchTest {
         assertEquals(path, parsed.params["Path"])
     }
 
+    @Test
+    fun leavesSilosStreamForTheZidooPlayerWhenNoRuleMatches() {
+        val stream = "http://192.168.1.20:8080/api/v2/stream/abc?st=signed.ref&token=jwt.part-two_3"
+        val uri = PlexToZidooLaunch.buildUri(
+            PlexToZidooLaunch.Request(
+                serverFilePath = "/mnt/media/Movies/Heat (1995)/Heat.mkv",
+                title = "Heat",
+                startPositionMs = 60_000,
+                streamUrl = stream,
+            ),
+        )
+        val parsed = parseLikePlexToZidoo(uri)
+
+        assertEquals(
+            stream +
+                "&PlexToZidoo-ViewOffset=60000" +
+                "&PlexToZidoo-Title=Heat" +
+                "&PlexToZidoo-Path=/mnt/media/Movies/Heat%20%281995%29/Heat.mkv",
+            uri,
+        )
+        assertEquals("/mnt/media/Movies/Heat (1995)/Heat.mkv", parsed.params["Path"])
+        // What PlexToZidoo plays when none of its rules match the path.
+        assertEquals(stream, parsed.remainder)
+    }
+
+    @Test
+    fun playsTheStreamAsItIsWhenThereIsNoPath() {
+        val stream = "https://silo.example/api/v2/stream/abc?st=x"
+        val parsed = parseLikePlexToZidoo(
+            PlexToZidooLaunch.buildUri(
+                PlexToZidooLaunch.Request(serverFilePath = null, title = "A", startPositionMs = 0, streamUrl = stream),
+            ),
+        )
+
+        assertEquals(setOf("ViewOffset", "Title", "PathMapped"), parsed.params.keys)
+        assertEquals(stream, parsed.remainder)
+    }
+
+    @Test
+    fun hasNothingToPlayWithoutAPathOrAStream() {
+        assertNull(PlexToZidooLaunch.buildUri(PlexToZidooLaunch.Request(serverFilePath = " ", title = "A", startPositionMs = 0)))
+        assertNull(
+            PlexToZidooLaunch.buildUri(
+                PlexToZidooLaunch.Request(serverFilePath = null, title = "A", startPositionMs = 0, streamUrl = ""),
+            ),
+        )
+    }
+
+    @Test
+    fun addsAQueryParameterWithTheRightSeparator() {
+        assertEquals("http://h/s?token=a.b", PlexToZidooLaunch.withQueryParameter("http://h/s", "token", "a.b"))
+        assertEquals("http://h/s?st=1&token=a%2Bb", PlexToZidooLaunch.withQueryParameter("http://h/s?st=1", "token", "a+b"))
+    }
+
     private class Parsed(val params: Map<String, String>, val remainder: String)
 
     /** The same regex, decoding and stripping PlexToZidoo's `Play.onStart` applies in ZDMC mode. */
-    private fun parseLikePlexToZidoo(data: String): Parsed {
+    private fun parseLikePlexToZidoo(uri: String?): Parsed {
+        val data = assertNotNull(uri)
         val matcher = Regex("[?&]PlexToZidoo-([^=]+)=([^&]+)")
         val params = matcher.findAll(data).associate { m ->
             m.groupValues[1] to URLDecoder.decode(m.groupValues[2], "UTF-8")

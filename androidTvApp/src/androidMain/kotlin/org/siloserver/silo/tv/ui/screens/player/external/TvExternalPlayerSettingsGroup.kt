@@ -45,10 +45,10 @@ internal fun TvExternalPlayerSettingsGroup(
         )
         SettingsFooterText(
             text = if (plexToZidooInstalled) {
-                "Movies and episodes open in the Zidoo player through PlexToZidoo. Set PlexToZidoo's path " +
-                    "substitution to turn your Silo server's paths into SMB or NFS locations. Silo keeps your " +
-                    "place and skips the markers you choose. Watch Party, Shuffle and casting from a phone " +
-                    "still use Silo's player."
+                "Movies and episodes open in the Zidoo player through PlexToZidoo, streamed from your Silo " +
+                    "server, or from your network share where a PlexToZidoo path substitution matches. Silo " +
+                    "keeps your place and skips the markers you choose. Watch Party, Shuffle and casting from " +
+                    "a phone still use Silo's player."
             } else {
                 "PlexToZidoo isn't installed. Get it from github.com/bowlingbeeg/PlexToZidoo/releases " +
                     "before turning this on."

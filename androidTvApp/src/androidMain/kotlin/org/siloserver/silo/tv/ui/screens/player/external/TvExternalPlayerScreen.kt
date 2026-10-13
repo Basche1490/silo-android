@@ -151,18 +151,18 @@ private fun FailedCard(
     onPlayInSilo: () -> Unit,
     onBack: () -> Unit,
 ) {
-    val path = failure.serverPath
+    val notPlayed = failure.notPlayed
     val actions = buildList {
-        if (path != null) {
+        if (notPlayed != null) {
             add(TvDialogAction("Open PlexToZidoo", onOpenPlexToZidoo, TvDialogActionStyle.Primary))
         }
         if (failure.canPlayInSilo) {
-            val style = if (path == null) TvDialogActionStyle.Primary else TvDialogActionStyle.Default
+            val style = if (notPlayed == null) TvDialogActionStyle.Primary else TvDialogActionStyle.Default
             add(TvDialogAction("Play in Silo", onPlayInSilo, style))
         }
         add(TvDialogAction("Back", onBack))
     }
-    if (path == null) {
+    if (notPlayed == null) {
         TvDialogCard(
             title = "Couldn't play in the Zidoo player",
             message = failure.message,
@@ -171,9 +171,9 @@ private fun FailedCard(
         )
         return
     }
-    // The Zidoo player was asked to play and didn't: almost always a path
-    // substitution that is missing or points at the wrong share. Show the
-    // exact path, because PlexToZidoo's rule has to match its start.
+    // The Zidoo player was asked to play and didn't. Say exactly what
+    // PlexToZidoo was given, because its substitution rules have to match the
+    // path, and otherwise the Zidoo player had to open Silo's stream.
     TvDialogCard(
         title = "Couldn't play in the Zidoo player",
         message = failure.message,
@@ -181,15 +181,35 @@ private fun FailedCard(
         initialFocusIndex = 0,
         width = 640.dp,
     ) {
-        Text(
-            text = path,
-            style = TvPlayerType.Row.copy(fontFamily = FontFamily.Monospace),
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(TvPlayerChrome.Chip, RoundedCornerShape(10.dp))
-                .padding(horizontal = 14.dp, vertical = 10.dp),
-        )
-        Text(text = substitutionHelp(path), style = TvPlayerType.Body)
+        notPlayed.serverPath?.let { path ->
+            Text(
+                text = path,
+                style = TvPlayerType.Row.copy(fontFamily = FontFamily.Monospace),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(TvPlayerChrome.Chip, RoundedCornerShape(10.dp))
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+            )
+        }
+        Text(text = notPlayedHelp(notPlayed), style = TvPlayerType.Body)
+    }
+}
+
+/** What to check, given what PlexToZidoo was sent, in PlexToZidoo's own setting names. */
+internal fun notPlayedHelp(notPlayed: ZidooHandoffState.NotPlayed): String {
+    val path = notPlayed.serverPath
+    val origin = notPlayed.streamOrigin
+    return when {
+        path != null && origin != null ->
+            "PlexToZidoo opens the file from your network share when one of its path substitutions " +
+                "matches the start of this path; check that rule's share name and SMB username and " +
+                "password. With no matching rule, the Zidoo player streams it from Silo at $origin, and " +
+                "adding a rule for this path is the way around a stream it can't open."
+        path != null ->
+            "Your Silo server would convert this file for this player rather than send the original, so " +
+                "PlexToZidoo has to open it from your network share. " + substitutionHelp(path)
+        origin != null -> "The Zidoo player couldn't open Silo's stream from $origin."
+        else -> ""
     }
 }
 
