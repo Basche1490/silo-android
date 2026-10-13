@@ -89,6 +89,37 @@ class ZidooPlaybackMonitorTest {
     }
 
     @Test
+    fun stopsWaitingAsSoonAsTheCallerKnowsThePlayerClosed() = runBlocking {
+        val player = ScriptedPlayer()
+        var polls = 0
+        val api = object : ZidooPlayerApi by player {
+            override suspend fun status(): ZidooPlayStatus? = player.status().also { polls++ }
+        }
+
+        val outcome = monitor(api, startupTimeoutMs = 60_000)
+            .run(onStarted = {}, onSample = {}, giveUpStarting = { polls >= 2 })
+
+        assertEquals(ZidooMonitorOutcome.PlayerDidNotStart, outcome)
+        assertEquals(2, polls)
+    }
+
+    @Test
+    fun givingUpOnlyAppliesBeforeTheVideoLoads() = runBlocking {
+        val player = ScriptedPlayer(null, playing(5_000), playing(6_000), null, null, null)
+        var polls = 0
+        val api = object : ZidooPlayerApi by player {
+            override suspend fun status(): ZidooPlayStatus? = player.status().also { polls++ }
+        }
+        var started = false
+
+        val outcome = monitor(api, startupTimeoutMs = 60_000)
+            .run(onStarted = { started = true }, onSample = {}, giveUpStarting = { polls >= 2 })
+
+        assertTrue(started)
+        assertEquals(ZidooMonitorOutcome.Finished(6_000, duration), outcome)
+    }
+
+    @Test
     fun endsWhenThePlayerReportsNoVideoOrAStoppedState() = runBlocking {
         val noVideo = ScriptedPlayer(playing(5_000), ZidooPlayStatus(0, 0, ZidooPlayState.STOPPED))
         val stopped = ScriptedPlayer(playing(5_000), ZidooPlayStatus(duration, 7_000, ZidooPlayState.STOPPED))

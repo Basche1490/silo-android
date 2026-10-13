@@ -42,23 +42,31 @@ remember the profile or change Profile Selection in Settings.
 
 ## Set up
 
-1. In **PlexToZidoo → Settings**, fill in path substitution so a path as Silo
-   reports it becomes a location the Zidoo box can open. For example, *Part of
-   the path to replace* `/media` and *Replace with* `smb://192.168.1.20/media`,
-   plus the SMB username and password if your share needs them. Several paths
-   can be listed, comma-separated, and there are slots for more shares. The
-   Plex settings in PlexToZidoo are not used.
+1. In **PlexToZidoo → Settings → Substitutions**, add a rule that turns a path
+   as Silo reports it into a location the Zidoo box can open. Silo reports the
+   path inside its own container, so with Silo's standard Docker setup paths
+   start with `/mnt/media`. For example, *Part of the path to replace*
+   `/mnt/media` and *Replaced with* `smb://192.168.1.20/video`, where `video`
+   is the NAS share that Silo's media folder points to. Add the SMB username
+   and password if the share needs them. Silo's paths usually differ from
+   Plex's, so rules made for Plex won't match; list both, comma-separated in
+   each field, or use *Add additional substitutions*. The Plex settings in
+   PlexToZidoo are not used.
 2. In **Silo → Settings → External Player**, turn on **Play in Zidoo Player**,
    and choose whether to skip intros and credits automatically. Intro skipping
    starts on; credits skipping starts off, because on a film it jumps past any
    scene after the credits.
-3. Play something. If the Zidoo player reports it cannot open
-   `no-path-substitution-matched`, no substitution rule matched the file's
-   path: turn on PlexToZidoo's debug screen and compare *Video Path* with your
-   rules.
+3. Play something.
 
-If Silo cannot hand off (no file path, PlexToZidoo missing, or the Zidoo player
-never starts), it says why and offers **Play in Silo**.
+If the Zidoo player doesn't play the file, Silo shows the exact path it sent,
+what to enter in PlexToZidoo, and a button that opens PlexToZidoo's settings.
+The Zidoo player saying it cannot open `no-path-substitution-matched` means no
+rule matched; an error with your share's address means the rule matched but the
+share, folder, or SMB sign-in is wrong. PlexToZidoo's *Debug data* setting also
+shows each path before playback starts.
+
+If Silo cannot hand off at all (no file path, or PlexToZidoo missing), it says
+why and offers **Play in Silo**.
 
 ## Getting the APK, and staying up to date
 

@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.util.Log
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -65,6 +66,12 @@ sealed interface ZidooHandoffState {
         val message: String,
         /** True when the built-in player is a sensible next step. */
         val canPlayInSilo: Boolean,
+        /**
+         * The file path Silo gave PlexToZidoo, when the Zidoo player was asked
+         * to play it and did not. The screen shows it, because PlexToZidoo's
+         * path substitution must match it.
+         */
+        val serverPath: String? = null,
     ) : ZidooHandoffState
 }
 
@@ -139,6 +146,13 @@ class ZidooHandoffCoordinator(
     @Volatile
     private var zidooPaused = false
 
+    /** The run whose screen went behind PlexToZidoo or the Zidoo player. */
+    @Volatile
+    private var hiddenRunId = 0L
+
+    /** The run whose screen came back before the Zidoo player reported a video. */
+    private val returnedBeforePlayback = MutableStateFlow(0L)
+
     // Seeded from the clock so an id a screen saved before Silo was killed
     // cannot match a run in the new process.
     private var lastRunId = System.currentTimeMillis()
@@ -166,13 +180,40 @@ class ZidooHandoffCoordinator(
         return runId
     }
 
-    /** Abandons [runId] if it has not reached the Zidoo player yet. Returns true when it did so. */
-    fun cancelIfPreparing(runId: Long): Boolean {
+    /**
+     * Abandons [runId] if nothing is playing for it: it has not opened
+     * PlexToZidoo yet, or Silo came back without the Zidoo player ever
+     * reporting a video. Returns true when it did so.
+     */
+    fun cancelIfNotPlaying(runId: Long): Boolean {
         val current = _state.value
-        if (current !is ZidooHandoffState.Preparing || current.runId != runId) return false
+        if (current.runId != runId) return false
+        val nothingPlaying = current is ZidooHandoffState.Preparing ||
+            (current is ZidooHandoffState.Launched && returnedBeforePlayback.value == runId)
+        if (!nothingPlaying) return false
         job?.cancel()
         _state.value = ZidooHandoffState.Idle
         return true
+    }
+
+    /** Tells the run that its screen went behind another app. Only a pause after PlexToZidoo opened counts. */
+    fun onScreenHidden(runId: Long) {
+        val current = _state.value
+        if (current is ZidooHandoffState.Launched && current.runId == runId) hiddenRunId = runId
+    }
+
+    /**
+     * Tells the run that its screen is in front again. Coming back after
+     * PlexToZidoo opened but before the Zidoo player reported a video means
+     * the player closed without playing, most often because it could not open
+     * the file. The run then stops waiting for it after [RETURN_GRACE_MS]
+     * instead of the monitor's full startup timeout.
+     */
+    fun onScreenShown(runId: Long) {
+        val current = _state.value
+        if (current is ZidooHandoffState.Launched && current.runId == runId && hiddenRunId == runId) {
+            returnedBeforePlayback.value = runId
+        }
     }
 
     /** Clears a finished or failed [runId] once its screen has acted on it. */
@@ -264,6 +305,10 @@ class ZidooHandoffCoordinator(
             // before it allows a foreground service to start. The service
             // stops itself once this run leaves the active states.
             ZidooHandoffService.start(appContext)
+            // Launched before PlexToZidoo opens, so the screen's pause that the
+            // launch causes is already seen as leaving for the Zidoo player.
+            setState(runId, ZidooHandoffState.Launched(runId, title))
+            zidooPaused = false
             try {
                 openPlexToZidoo(intent)
             } catch (_: ActivityNotFoundException) {
@@ -272,8 +317,6 @@ class ZidooHandoffCoordinator(
                 Log.w(TAG, "Android refused to open PlexToZidoo", e)
                 return fail(runId, LAUNCH_REFUSED_MESSAGE, canPlayInSilo = true)
             }
-            setState(runId, ZidooHandoffState.Launched(runId, title))
-            zidooPaused = false
             launched = true
 
             val monitor = newMonitor(
@@ -295,8 +338,17 @@ class ZidooHandoffCoordinator(
                     }
                     Log.i(TAG, "The server ended this playback session; stopped the Zidoo player")
                 }
+                // Silo back in front before any video loaded means the Zidoo
+                // player has closed. Allow a moment in case it is still coming.
+                val playerNotComing = AtomicBoolean(false)
+                val returnWatch = launch {
+                    returnedBeforePlayback.first { it == runId }
+                    delay(RETURN_GRACE_MS)
+                    playerNotComing.set(true)
+                }
                 try {
                     monitor.run(
+                        giveUpStarting = playerNotComing::get,
                         onStarted = { setState(runId, ZidooHandoffState.Playing(runId, title)) },
                         onSample = { sample ->
                             if (sample.paused != zidooPaused) {
@@ -313,11 +365,12 @@ class ZidooHandoffCoordinator(
                     )
                 } finally {
                     endedByServer.cancel()
+                    returnWatch.cancel()
                 }
             }
             when (outcome) {
                 ZidooMonitorOutcome.PlayerDidNotStart ->
-                    return fail(runId, PLAYER_DID_NOT_START_MESSAGE, canPlayInSilo = true)
+                    return fail(runId, PLAYER_DID_NOT_START_MESSAGE, canPlayInSilo = true, serverPath = path)
                 is ZidooMonitorOutcome.Finished -> {
                     setState(runId, ZidooHandoffState.Saving(runId, title))
                     if (outcome.lastPositionMs > 0L) {
@@ -383,8 +436,8 @@ class ZidooHandoffCoordinator(
         if (_state.value.runId == runId) _state.value = state
     }
 
-    private fun fail(runId: Long, message: String, canPlayInSilo: Boolean) =
-        setState(runId, ZidooHandoffState.Failed(runId, message, canPlayInSilo))
+    private fun fail(runId: Long, message: String, canPlayInSilo: Boolean, serverPath: String? = null) =
+        setState(runId, ZidooHandoffState.Failed(runId, message, canPlayInSilo, serverPath))
 
     private fun displayTitle(ready: VideoPlaybackStartResult.Ready): String {
         val series = ready.seriesTitle?.takeIf { it.isNotBlank() }
@@ -431,8 +484,16 @@ class ZidooHandoffCoordinator(
         const val LAUNCH_REFUSED_MESSAGE =
             "Android wouldn't open PlexToZidoo. Open PlexToZidoo once by itself, then try again."
 
+        /** Shown with the file's path; the screen adds what to enter in PlexToZidoo. */
         const val PLAYER_DID_NOT_START_MESSAGE =
-            "The Zidoo player didn't start. Open PlexToZidoo, turn on its debug screen, and check that its " +
-                "path substitution turns your server path into a working SMB or NFS location."
+            "The Zidoo player didn't play this file. PlexToZidoo has to turn the path Silo sent into a " +
+                "network share the Zidoo can open. Silo sent:"
+
+        /**
+         * How long a run keeps waiting for the Zidoo player after Silo is back
+         * in front. The player is closed by then; this only absorbs a slow
+         * status reading.
+         */
+        const val RETURN_GRACE_MS = 2_000L
     }
 }

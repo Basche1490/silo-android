@@ -1,7 +1,9 @@
 package org.siloserver.silo.tv.ui.screens.player.external
 
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.util.Log
 import org.siloserver.silo.common.player.external.PlexToZidooLaunch
 
 /**
@@ -16,3 +18,17 @@ internal fun isPlexToZidooInstalled(context: Context): Boolean =
     } catch (_: PackageManager.NameNotFoundException) {
         false
     }
+
+/**
+ * Opens PlexToZidoo's settings. Pass the current Activity as [context], so the
+ * settings open in Silo's task and Back returns to Silo.
+ */
+internal fun openPlexToZidooSettings(context: Context) {
+    try {
+        context.startActivity(
+            Intent().setClassName(PlexToZidooLaunch.PACKAGE_NAME, PlexToZidooLaunch.SETTINGS_ACTIVITY_CLASS),
+        )
+    } catch (e: RuntimeException) {
+        Log.w("PlexToZidoo", "Could not open PlexToZidoo's settings", e)
+    }
+}

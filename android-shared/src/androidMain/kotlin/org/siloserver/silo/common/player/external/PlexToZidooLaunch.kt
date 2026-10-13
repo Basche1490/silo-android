@@ -31,6 +31,9 @@ object PlexToZidooLaunch {
     /** The activity that handles the launch. It is exported. */
     const val ACTIVITY_CLASS = "com.hpn789.plextozidoo.Play"
 
+    /** PlexToZidoo's settings, where its path substitution rules live. Its launcher activity, so exported. */
+    const val SETTINGS_ACTIVITY_CLASS = "com.hpn789.plextozidoo.SettingsActivity"
+
     private const val PARAM_PREFIX = "PlexToZidoo-"
 
     data class Request(
