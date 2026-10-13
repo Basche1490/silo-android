@@ -240,6 +240,9 @@ val androidTvModule = module {
         )
     }
 
+    // [zidoo-fork] Settings → External Player (Zidoo via PlexToZidoo).
+    includes(org.siloserver.silo.tv.ui.screens.player.external.externalPlayerTvModule)
+
     // Audiobook player deps. TV reuses the shared android-shared VM. The TV
     // graph has no downloads (streaming-only), so register the resolver inline:
     // it just always finds no local media and the VM falls back to the server
@@ -347,6 +350,8 @@ val androidTvModule = module {
             // The timed choices keep the Watch Next row until the interval
             // runs out, then a check removes it.
             onAwayIntervalStarted = watchNextSeeder::scheduleProfileExpiryCheck,
+            // [zidoo-fork] Playback in the Zidoo player is playback on another screen.
+            isCasting = org.siloserver.silo.tv.ui.screens.player.external.ZidooHandoffCoordinator::isHandingOffNow,
         )
     }
     single { TvActiveProfileReset(get(), get(), get(), get(), get(), get(), get(), get()) }

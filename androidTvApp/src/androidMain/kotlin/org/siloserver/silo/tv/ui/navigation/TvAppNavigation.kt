@@ -29,6 +29,8 @@ import org.siloserver.silo.common.ui.marquee.MarqueeBackdrop
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import org.siloserver.silo.common.player.video.VideoPlayerRouteArgs
+import org.siloserver.silo.tv.ui.screens.player.external.ZidooHandoffArgs // [zidoo-fork]
+import org.siloserver.silo.tv.ui.screens.player.external.handOffToZidooIfEnabled // [zidoo-fork]
 import org.siloserver.silo.network.TokenManager
 import org.siloserver.silo.repository.AuthRepository
 import org.siloserver.silo.repository.ProfilePromptAction
@@ -1555,6 +1557,31 @@ fun TvAppNavigation(
                         popUpTo(TvRoute.Player.ROUTE) { inclusive = true }
                     }
                 }
+                return@composable
+            }
+            // [zidoo-fork] Settings → External Player can hand this playback
+            // to the Zidoo player instead of composing Silo's own player.
+            if (
+                handOffToZidooIfEnabled(
+                    entryId = backStack.id,
+                    args = ZidooHandoffArgs(
+                        contentId = contentId,
+                        libraryId = backStack.arguments?.getString("libraryId")?.toIntOrNull(),
+                        preferredFileId = preferredFileId,
+                        preferredQuality = preferredQuality,
+                        resumePositionOverride = resumePositionOverride,
+                        audioTrackIndex = audioTrackIndex,
+                        subtitleTrackIndex = subtitleTrackIndex,
+                        episodeSelectionHandoff = episodeSelectionHandoff,
+                        roomId = roomId,
+                        castLaunchId = castLaunchId,
+                        shuffleId = backStack.arguments?.getString(TvRoute.Player.ARG_SHUFFLE_ID),
+                    ),
+                    onExit = {
+                        if (navController.currentBackStackEntry?.id == backStack.id) navController.popBackStack()
+                    },
+                )
+            ) {
                 return@composable
             }
             // TvPlayerViewModel starts loading in its initializer, which runs

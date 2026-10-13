@@ -18,6 +18,11 @@
     <uses-permission android:name="com.android.providers.tv.permission.WRITE_EPG_DATA" />
     <uses-permission android:name="com.android.providers.tv.permission.READ_EPG_DATA" />
 
+    <!-- [zidoo-fork] External Player: lets Settings see whether PlexToZidoo is installed. -->
+    <queries>
+        <package android:name="com.hpn789.plextozidoo" />
+    </queries>
+
     <application
         android:name=".SiloTvApplication"
         android:allowBackup="false"
@@ -94,6 +99,13 @@
                 <action android:name="androidx.media3.session.MediaSessionService" />
             </intent-filter>
         </service>
+
+        <!-- [zidoo-fork] External Player: keeps Silo alive while the Zidoo player
+             plays, so resume progress and marker skips keep working. -->
+        <service
+            android:name=".ui.screens.player.external.ZidooHandoffService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
 
         <!-- Disable WorkManager's androidx.startup auto-init so our explicit
              `WorkManager.initialize(this, workManagerConfiguration)` call in

@@ -1,0 +1,183 @@
+name: Zidoo TV APK
+
+# Builds a sideloadable Android TV APK of this fork (External Player: Zidoo via
+# PlexToZidoo) on top of the newest Silo code, and publishes it as a GitHub
+# Release. On the Zidoo, the latest build is always at:
+#   https://github.com/<you>/silo-android/releases/latest/download/silo-tv-zidoo.apk
+#
+# Each run merges Silo-Server/silo-android main into a temporary copy of this
+# branch, runs the External Player tests, builds, and releases. Nothing is
+# pushed back to the branch: GitHub does not let a workflow's own token push
+# changes to workflow files, and upstream edits its workflows often. Use the
+# "Sync fork" button to bring the branch itself up to date.
+#
+# If upstream changes clash with the fork's edits, the run fails, names the
+# files in its summary, and opens an issue when the fork has issues enabled.
+# docs/zidoo-external-player.md explains how to fix a clash.
+#
+# The fork's fixed debug key (.github/zidoo-debug.keystore, password "android")
+# signs every build, so a newer APK installs over an older one. It is a debug
+# key like the one Android Studio creates for everyone; it protects nothing.
+
+on:
+  schedule:
+    # Mondays 09:17 UTC. A week with no new Silo or fork commits builds nothing.
+    - cron: "17 9 * * 1"
+  workflow_dispatch:
+    inputs:
+      merge_upstream:
+        description: Merge the newest Silo code into the build
+        type: boolean
+        default: true
+      force:
+        description: Build and release even if this exact combination was built before
+        type: boolean
+        default: false
+  push:
+    branches:
+      - main
+      - zidoo-external-player
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: zidoo-tv-apk-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  apk:
+    name: TV APK
+    # Only in forks: upstream Silo has its own release pipeline.
+    if: github.repository != 'Silo-Server/silo-android'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      GH_TOKEN: ${{ github.token }}
+      # Pin gh to this fork. Without it, gh prefers the "upstream" remote the
+      # merge step adds, and would file issues against Silo itself.
+      GH_REPO: ${{ github.repository }}
+      UPSTREAM_URL: https://github.com/Silo-Server/silo-android.git
+
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Merge the newest Silo code
+        id: merge
+        if: github.event_name != 'workflow_dispatch' || inputs.merge_upstream
+        run: |
+          git config user.name "zidoo-build"
+          git config user.email "zidoo-build@users.noreply.github.com"
+          git remote add upstream "$UPSTREAM_URL"
+          git fetch --no-tags upstream main
+          echo "upstream=$(git rev-parse --short=7 upstream/main)" >> "$GITHUB_OUTPUT"
+          if git merge --no-edit upstream/main; then
+            echo "conflict=false" >> "$GITHUB_OUTPUT"
+          else
+            git diff --name-only --diff-filter=U > "$RUNNER_TEMP/conflicts.txt"
+            git merge --abort
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Report a clash with upstream Silo
+        if: steps.merge.outputs.conflict == 'true'
+        run: |
+          {
+            echo "## Upstream Silo changes clash with the Zidoo fork"
+            echo
+            echo "Silo-Server/silo-android main (${{ steps.merge.outputs.upstream }}) changed the same lines as the fork in:"
+            echo
+            sed 's/^/- `/; s/$/`/' "$RUNNER_TEMP/conflicts.txt"
+            echo
+            echo "Fix it by syncing the fork and resolving these files; every fork edit to a Silo file is marked [zidoo-fork]."
+            echo "See docs/zidoo-external-player.md, \"When an update clashes\"."
+          } > "$RUNNER_TEMP/clash.md"
+          cat "$RUNNER_TEMP/clash.md" >> "$GITHUB_STEP_SUMMARY"
+          title="Zidoo build: upstream Silo changes clash with the fork"
+          if ! gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number' | grep -q .; then
+            gh issue create --title "$title" --body-file "$RUNNER_TEMP/clash.md" || echo "Issues are off in this fork; see the run summary."
+          fi
+          exit 1
+
+      - name: Decide whether to build
+        id: plan
+        run: |
+          fork="$(git rev-parse --short=7 "$GITHUB_SHA")"
+          up="${{ steps.merge.outputs.upstream }}"
+          tag="zidoo-${fork}-${up:-unmerged}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 && [ "${{ inputs.force }}" != "true" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Release $tag already exists: nothing new to build." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up JDK 21
+        if: steps.plan.outputs.skip != 'true'
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Gradle
+        if: steps.plan.outputs.skip != 'true'
+        uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6
+
+      - name: Use the fork's fixed debug key
+        if: steps.plan.outputs.skip != 'true'
+        run: |
+          mkdir -p ~/.android
+          cp .github/zidoo-debug.keystore ~/.android/debug.keystore
+
+      - name: Run the External Player unit tests
+        if: steps.plan.outputs.skip != 'true'
+        run: |
+          ./gradlew \
+            -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8" \
+            :android-shared:testDebugUnitTest \
+            --tests 'org.siloserver.silo.common.player.external.*' \
+            --max-workers=2
+
+      - name: Build the TV APK
+        if: steps.plan.outputs.skip != 'true'
+        run: |
+          ./gradlew \
+            -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8" \
+            :androidTvApp:assembleDebug \
+            --max-workers=2
+          cp androidTvApp/build/outputs/apk/debug/androidTvApp-universal-debug.apk silo-tv-zidoo.apk
+
+      - name: Upload the APK to this run
+        if: steps.plan.outputs.skip != 'true'
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: silo-tv-zidoo-apk
+          path: silo-tv-zidoo.apk
+          if-no-files-found: error
+
+      - name: Publish a release
+        if: steps.plan.outputs.skip != 'true'
+        run: |
+          tag="${{ steps.plan.outputs.tag }}"
+          up="${{ steps.merge.outputs.upstream }}"
+          notes="Silo Android TV with External Player (Zidoo via PlexToZidoo).
+
+          - Fork commit: $(git rev-parse --short=7 "$GITHUB_SHA")
+          - Silo upstream: ${up:-not merged in this build}
+
+          Install silo-tv-zidoo.apk on the Zidoo. It installs over earlier builds from this fork.
+          The source archives below are the fork commit alone; the APK also includes the Silo upstream commit above."
+          gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$tag" silo-tv-zidoo.apk \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Silo TV for Zidoo ($tag)" \
+            --notes "$notes" \
+            --latest
+          echo "Released $tag: https://github.com/$GITHUB_REPOSITORY/releases/latest/download/silo-tv-zidoo.apk" >> "$GITHUB_STEP_SUMMARY"

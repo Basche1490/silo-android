@@ -138,6 +138,7 @@ import org.siloserver.silo.tv.ui.theme.Spacing
 import org.koin.compose.koinInject
 import org.koin.compose.viewmodel.koinViewModel
 import org.siloserver.silo.common.watchparty.WatchPartyExperiment
+import org.siloserver.silo.tv.ui.screens.player.external.TvExternalPlayerSettingsGroup // [zidoo-fork]
 import org.siloserver.silo.viewmodel.HomeViewModel
 import kotlinx.coroutines.delay
 
@@ -1094,6 +1095,8 @@ private fun TvGeneralSettingsPane(
                 )
             }
         }
+        // [zidoo-fork] Settings → External Player (Zidoo via PlexToZidoo).
+        item { TvExternalPlayerSettingsGroup() }
         item {
             // Settings → Experimental (D1): device-local, never synced. Turning
             // Watch Party off hides every entry point and leaves any party.
