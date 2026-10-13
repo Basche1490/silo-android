@@ -112,7 +112,6 @@ import org.siloserver.silo.android.ui.screens.profiles.CreateProfileScreen
 import org.siloserver.silo.android.ui.screens.profiles.EditProfileScreen
 import org.siloserver.silo.android.ui.screens.profiles.ProfileSelectionScreen
 import org.siloserver.silo.android.ui.screens.requests.MyRequestsScreen
-import org.siloserver.silo.android.ui.screens.requests.RequestApprovalsScreen
 import org.siloserver.silo.android.ui.screens.requests.RequestDetailScreen
 import org.siloserver.silo.android.ui.screens.requests.RequestsScreen
 import org.siloserver.silo.android.ui.screens.search.MobileSearchMediaType
@@ -1210,6 +1209,18 @@ fun AppNavigation(
                 }
             }
         }
+        // The request Approvals screen was removed (request administration is
+        // web admin only); a saved back stack from an older build can still
+        // hold its route, so keep a hidden redirect to Requests rather than
+        // crash on restore. Registered, never rendered.
+        composable("requests/approvals") {
+            LaunchedEffect(Unit) {
+                navController.navigate(Route.Requests.route) {
+                    popUpTo("requests/approvals") { inclusive = true }
+                    launchSingleTop = true
+                }
+            }
+        }
         composable(Route.Settings.route) {
             SettingsScreen(
                 onOpenInterface = { navController.navigate(Route.SettingsInterface.route) },
@@ -1341,21 +1352,12 @@ fun AppNavigation(
             RequestsScreen(
                 onBackClick = { navController.popBackStack() },
                 onMyRequestsClick = { navController.navigate(Route.MyRequests.route) },
-                onApprovalsClick = { navController.navigate(Route.RequestApprovals.route) },
                 onRequestDetailClick = openRequestDetail,
                 onLibraryItemClick = openRequestLibraryItem,
             )
         }
         composable(Route.MyRequests.route) {
             MyRequestsScreen(
-                onBackClick = { navController.popBackStack() },
-                onApprovalsClick = { navController.navigate(Route.RequestApprovals.route) },
-                onRequestDetailClick = openRequestDetail,
-                onLibraryItemClick = openRequestLibraryItem,
-            )
-        }
-        composable(Route.RequestApprovals.route) {
-            RequestApprovalsScreen(
                 onBackClick = { navController.popBackStack() },
                 onRequestDetailClick = openRequestDetail,
                 onLibraryItemClick = openRequestLibraryItem,
