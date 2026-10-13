@@ -93,9 +93,11 @@ Every build is signed with the same debug key (`.github/zidoo-debug.keystore`),
 so a new APK installs over the old one and keeps your sign-in. The build keeps
 Silo's application ID, so the official Silo TV app has to be uninstalled once
 before the first install. Locally, `./gradlew :androidTvApp:assembleDebug`
-builds the same app; copy `.github/zidoo-debug.keystore` to
-`~/.android/debug.keystore` first if it should install over the workflow's
-builds.
+builds the same app. To sign it with the fork's key, so it installs over the
+workflow's builds, add `-Pandroid.injected.signing.store.file=.github/zidoo-debug.keystore
+-Pandroid.injected.signing.store.password=android
+-Pandroid.injected.signing.key.alias=androiddebugkey
+-Pandroid.injected.signing.key.password=android`.
 
 ## When an update clashes
 

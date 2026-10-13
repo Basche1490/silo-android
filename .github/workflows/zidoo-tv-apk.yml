@@ -16,8 +16,9 @@ name: Zidoo TV APK
 # docs/zidoo-external-player.md explains how to fix a clash.
 #
 # The fork's fixed debug key (.github/zidoo-debug.keystore, password "android")
-# signs every build, so a newer APK installs over an older one. It is a debug
-# key like the one Android Studio creates for everyone; it protects nothing.
+# signs every build, and the run checks the APK's signer before releasing, so a
+# newer APK always installs over an older one. It is a debug key like the one
+# Android Studio creates for everyone; it protects nothing.
 
 on:
   schedule:
@@ -129,12 +130,6 @@ jobs:
         if: steps.plan.outputs.skip != 'true'
         uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6
 
-      - name: Use the fork's fixed debug key
-        if: steps.plan.outputs.skip != 'true'
-        run: |
-          mkdir -p ~/.android
-          cp .github/zidoo-debug.keystore ~/.android/debug.keystore
-
       - name: Run the External Player unit tests
         if: steps.plan.outputs.skip != 'true'
         run: |
@@ -146,12 +141,33 @@ jobs:
 
       - name: Build the TV APK
         if: steps.plan.outputs.skip != 'true'
+        # Signed explicitly with the fork's key. Copying it to ~/.android was
+        # not enough: the Android build looked for its default debug key
+        # elsewhere on GitHub's runners and signed with a fresh one.
         run: |
           ./gradlew \
             -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8" \
+            -Pandroid.injected.signing.store.file="$GITHUB_WORKSPACE/.github/zidoo-debug.keystore" \
+            -Pandroid.injected.signing.store.password=android \
+            -Pandroid.injected.signing.key.alias=androiddebugkey \
+            -Pandroid.injected.signing.key.password=android \
             :androidTvApp:assembleDebug \
             --max-workers=2
           cp androidTvApp/build/outputs/apk/debug/androidTvApp-universal-debug.apk silo-tv-zidoo.apk
+
+      - name: Check the APK is signed with the fork's key
+        if: steps.plan.outputs.skip != 'true'
+        # A build signed with any other key would not install over earlier
+        # ones, so it must never become the latest release.
+        run: |
+          apksigner="$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)apksigner"
+          want="$(keytool -exportcert -keystore .github/zidoo-debug.keystore -storepass android -alias androiddebugkey | sha256sum | cut -d' ' -f1)"
+          got="$("$apksigner" verify --print-certs silo-tv-zidoo.apk | sed -n 's/.*certificate SHA-256 digest: //p' | head -1)"
+          echo "::notice title=APK signer::$got"
+          if [ "$got" != "$want" ]; then
+            echo "::error title=Wrong signing key::The APK is signed with $got, not the fork's key $want."
+            exit 1
+          fi
 
       - name: Upload the APK to this run
         if: steps.plan.outputs.skip != 'true'
