@@ -19,6 +19,12 @@ name: Zidoo TV APK
 # signs every build, and the run checks the APK's signer before releasing, so a
 # newer APK always installs over an older one. It is a debug key like the one
 # Android Studio creates for everyone; it protects nothing.
+#
+# The APK is a release build, like Silo's own sideload APK: optimized by R8 and
+# not debuggable, so Android compiles it ahead of time. A debug build runs far
+# slower on a Zidoo. It carries the version of Silo's newest tester build
+# (vX.Y.Z-beta.B tag) and that build's versionCode, which only ever goes up, so
+# each APK installs over the last.
 
 on:
   schedule:
@@ -119,6 +125,40 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Pick the version to stamp
+        id: version
+        if: steps.plan.outputs.skip != 'true'
+        # Silo's own formula (scripts/release-version.py), applied to its newest
+        # tester build tag. Without a stamp, Gradle uses versionCode 3, which
+        # would not install over an earlier build.
+        run: |
+          git ls-remote --tags --refs "$UPSTREAM_URL" 'v*' > "$RUNNER_TEMP/upstream-tags.txt"
+          python3 - "$RUNNER_TEMP/upstream-tags.txt" >> "$GITHUB_OUTPUT" <<'PY'
+          import re
+          import sys
+
+          beta = re.compile(r"refs/tags/v(\d+)\.(\d+)\.(\d+)-beta\.(\d+)")
+          best = None
+          for line in open(sys.argv[1]):
+              match = beta.fullmatch(line.split()[-1]) if line.strip() else None
+              if not match:
+                  continue
+              major, minor, patch, build = (int(part) for part in match.groups())
+              if major > 94 or minor > 99 or patch > 99 or not 1 <= build <= 999:
+                  continue
+              code = 100_000_000 + (major * 10_000 + minor * 100 + patch) * 1_000 + build
+              if best is None or code > best[0]:
+                  best = (code, f"{major}.{minor}.{patch}", build)
+          if best is None:
+              print("::error title=No version to stamp::Silo has no vX.Y.Z-beta.B tag to take the version from.", file=sys.stderr)
+              sys.exit(1)
+          code, version, build = best
+          print(f"version={version}")
+          print(f"build={build}")
+          print(f"code={code}")
+          PY
+          cat "$GITHUB_OUTPUT" | tail -3
+
       - name: Set up JDK 21
         if: steps.plan.outputs.skip != 'true'
         uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5
@@ -141,19 +181,22 @@ jobs:
 
       - name: Build the TV APK
         if: steps.plan.outputs.skip != 'true'
-        # Signed explicitly with the fork's key. Copying it to ~/.android was
-        # not enough: the Android build looked for its default debug key
-        # elsewhere on GitHub's runners and signed with a fresh one.
+        # The same release build as Silo's sideload APK, signed with the fork's
+        # key through Silo's own release-signing variables.
+        env:
+          SILO_RELEASE_KEYSTORE: ${{ github.workspace }}/.github/zidoo-debug.keystore
+          SILO_RELEASE_KEYSTORE_PASSWORD: android
+          SILO_RELEASE_KEY_ALIAS: androiddebugkey
         run: |
           ./gradlew \
             -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8" \
-            -Pandroid.injected.signing.store.file="$GITHUB_WORKSPACE/.github/zidoo-debug.keystore" \
-            -Pandroid.injected.signing.store.password=android \
-            -Pandroid.injected.signing.key.alias=androiddebugkey \
-            -Pandroid.injected.signing.key.password=android \
-            :androidTvApp:assembleDebug \
+            :androidTvApp:assembleRelease \
+            "-PsiloVersionName=${{ steps.version.outputs.version }}" \
+            "-PsiloBuildNumber=${{ steps.version.outputs.build }}" \
+            "-PsiloVersionCode=${{ steps.version.outputs.code }}" \
+            -PsiloReleaseChannel=sideload \
             --max-workers=2
-          cp androidTvApp/build/outputs/apk/debug/androidTvApp-universal-debug.apk silo-tv-zidoo.apk
+          cp androidTvApp/build/outputs/apk/release/androidTvApp-universal-release.apk silo-tv-zidoo.apk
 
       - name: Check the APK is signed with the fork's key
         if: steps.plan.outputs.skip != 'true'
@@ -166,6 +209,25 @@ jobs:
           echo "::notice title=APK signer::$got"
           if [ "$got" != "$want" ]; then
             echo "::error title=Wrong signing key::The APK is signed with $got, not the fork's key $want."
+            exit 1
+          fi
+
+      - name: Check the APK's version and build type
+        if: steps.plan.outputs.skip != 'true'
+        # An APK with a lower versionCode than the installed one, or a
+        # debuggable one, must never become the latest release.
+        run: |
+          aapt2="$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)aapt2"
+          badging="$("$aapt2" dump badging silo-tv-zidoo.apk)"
+          package="$(echo "$badging" | head -1)"
+          echo "::notice title=APK package::$package"
+          want_code=$(( ${{ steps.version.outputs.code }} * 2 + 1 ))
+          if ! echo "$package" | grep -q "versionCode='$want_code'"; then
+            echo "::error title=Wrong versionCode::Expected versionCode $want_code: $package"
+            exit 1
+          fi
+          if echo "$badging" | grep -q "application-debuggable"; then
+            echo "::error title=Debuggable APK::The APK is a debug build."
             exit 1
           fi
 
@@ -184,6 +246,7 @@ jobs:
           up="${{ steps.merge.outputs.upstream }}"
           notes="Silo Android TV with External Player (Zidoo via PlexToZidoo).
 
+          - Silo version: ${{ steps.version.outputs.version }} (build ${{ steps.version.outputs.build }})
           - Fork commit: $(git rev-parse --short=7 "$GITHUB_SHA")
           - Silo upstream: ${up:-not merged in this build}
 

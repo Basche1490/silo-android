@@ -128,15 +128,27 @@ How updates arrive:
 - GitHub pauses scheduled workflows in repositories with no activity for 60
   days. Re-enable it from the Actions tab if that happens.
 
+The APK is a release build, the same kind as Silo's own sideload APK:
+optimized and compiled ahead of time by Android, so it runs smoothly on a
+Zidoo. (Builds before October 14, 2026 were debug builds, which run much
+slower.) It carries the version of Silo's newest tester build, shown in
+Settings as, for example, "Silo 1.0.0 (23)", and that build's versionCode,
+which only goes up, so each APK installs over the last. As in Silo's own
+release builds, Settings → Experimental → Watch Party starts off.
+
 Every build is signed with the same debug key (`.github/zidoo-debug.keystore`),
 so a new APK installs over the old one and keeps your sign-in. The build keeps
 Silo's application ID, so the official Silo TV app has to be uninstalled once
-before the first install. Locally, `./gradlew :androidTvApp:assembleDebug`
-builds the same app. To sign it with the fork's key, so it installs over the
-workflow's builds, add `-Pandroid.injected.signing.store.file=.github/zidoo-debug.keystore
--Pandroid.injected.signing.store.password=android
--Pandroid.injected.signing.key.alias=androiddebugkey
--Pandroid.injected.signing.key.password=android`.
+before the first install. To build the same APK locally:
+
+    SILO_RELEASE_KEYSTORE=$PWD/.github/zidoo-debug.keystore \
+    SILO_RELEASE_KEYSTORE_PASSWORD=android SILO_RELEASE_KEY_ALIAS=androiddebugkey \
+    ./gradlew :androidTvApp:assembleRelease -PsiloReleaseChannel=sideload \
+      -PsiloVersionName=1.0.0 -PsiloBuildNumber=23 -PsiloVersionCode=110000023
+
+using the version of Silo's newest `vX.Y.Z-beta.B` tag, with versionCode
+`100000000 + (X*10000 + Y*100 + Z)*1000 + B`. A lower versionCode than the
+installed app's won't install over it.
 
 ## When an update clashes
 
