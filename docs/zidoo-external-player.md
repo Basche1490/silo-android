@@ -19,6 +19,13 @@ Silo still tracks the playback:
 - **Audio and subtitles.** Your audio choice carries over. A subtitle carries
   over when it is embedded in the file; anything else is left to the Zidoo
   player's own language settings.
+- **Up Next.** When an episode plays to the end (into the credits, or its
+  last half minute), Silo shows the next one, from this season or the next.
+  With Settings → Playback → Auto-Play Next Episode on, it opens in the Zidoo
+  player after Silo's usual 10-second countdown; **Play Now** starts it
+  straight away and **Back** returns to the show. The Still Watching Prompt applies as in
+  Silo's own player: after that many episodes in a row, Silo waits for Play
+  Now.
 - **The file as it is.** Silo asks the server to plan for the Zidoo player,
   not for Silo's own player, so the server sends the original file: DTS,
   TrueHD, Blu-ray `.m2ts`, VC-1 and Dolby Vision Profile 7 included. The
@@ -28,6 +35,11 @@ Silo still tracks the playback:
 Watch Party, Shuffle and casting from a phone keep using Silo's built-in
 player. If a server administrator ends the session, Silo stops the Zidoo
 player, as it leaves its own player.
+
+Zidoo players report a lower screen density than other Android TV boxes,
+which makes most apps look small. Silo lays itself out at the standard
+Android TV size instead. To use the Zidoo's own size, turn off **Settings →
+Interface Size → Fit Interface to TV**.
 
 For Profile Selection ("Who's watching?"), playback in the Zidoo player
 counts as using the profile, the way a phone's Cast session does: coming back
@@ -137,7 +149,7 @@ To fix it, on a computer with git:
     git commit && git push
 
 Or ask Claude with the fork's name: it can do the merge, run the tests and
-push. The clash is almost always in one of the four Silo files listed below,
+push. The clash is almost always in one of the five Silo files listed below,
 each change marked with `[zidoo-fork]`.
 
 ## What the fork changes
@@ -151,6 +163,9 @@ New files (no clash possible):
 | Polling, skips, end-of-playback detection | `android-shared/.../player/external/ZidooPlaybackMonitor.kt`, `ZidooSkipPlanner.kt` |
 | Audio and subtitle index translation | `android-shared/.../player/external/ZidooTrackMapping.kt` |
 | Settings store | `android-shared/.../player/external/ExternalPlayerSettings.kt` |
+| Stream relay for the Zidoo player | `android-shared/.../player/external/ZidooStreamRelay.kt` |
+| Capabilities the server plans for | `android-shared/.../player/external/ZidooPlayerCapabilities.kt`, `androidTvApp/.../player/external/ZidooStartParams.kt` |
+| Interface size on low-density boxes | `androidTvApp/.../player/external/TvInterfaceScale.kt` |
 | Unit tests for all of the above | `android-shared/src/androidUnitTest/.../player/external/` |
 | One hand-off, from server session to final save | `androidTvApp/.../player/external/ZidooHandoffCoordinator.kt` |
 | Keeps Silo alive while the Zidoo player plays | `androidTvApp/.../player/external/ZidooHandoffService.kt` |
@@ -162,9 +177,10 @@ Edits to Silo's own files, each marked `[zidoo-fork]` (`git grep "\[zidoo-fork\]
 
 | File | Change |
 | --- | --- |
+| `androidTvApp/.../tv/MainTvActivity.kt` | `attachBaseContext` applies `TvInterfaceScale.overrideConfiguration(...)` |
 | `androidTvApp/src/androidMain/AndroidManifest.xml` | `<queries>` for PlexToZidoo; the foreground service |
 | `androidTvApp/.../tv/di/AndroidTvModule.kt` | `includes(externalPlayerTvModule)`; `isCasting = ZidooHandoffCoordinator::isHandingOffNow` on the profile tracker, so Zidoo playback counts as using the profile |
-| `androidTvApp/.../tv/ui/navigation/TvAppNavigation.kt` | `handOffToZidooIfEnabled(...)` in the `TvRoute.Player` destination, just before Silo's player is composed |
+| `androidTvApp/.../tv/ui/navigation/TvAppNavigation.kt` | `handOffToZidooIfEnabled(...)` in the `TvRoute.Player` destination, just before Silo's player is composed; its `onPlayNextEpisode` opens the next episode's `TvRoute.Player` in place of this one |
 | `androidTvApp/.../tv/ui/screens/settings/TvSettingsScreen.kt` | `item { TvExternalPlayerSettingsGroup() }` |
 
 ## How it works
@@ -194,12 +210,17 @@ Plex links carry `X-Plex-Token`.)
 Silo polls `http://127.0.0.1:9529/ZidooVideoPlay/getPlayStatus` once a
 second, seeks with `ZidooVideoPlay/seekTo` to skip markers, reports progress
 to the session, and stops the session and the relay when the Zidoo player
-closes. A foreground service keeps Silo's process alive in the meantime,
+closes. While the episode plays, Silo looks up the next one the way its own
+player does, so Up Next is ready when the Zidoo player closes; choosing it
+opens a new hand-off. A foreground service keeps Silo's process alive in the meantime,
 because Zidoo firmware only lets a couple of apps stay in the background.
 
 ## Known limits
 
-- The next episode does not start automatically when one finishes.
+- Up Next appears once the Zidoo player has closed, not over the credits
+  while they play.
+- The interface size is set when Silo opens. If the box changes its interface
+  resolution while Silo is open, reopen Silo.
 - A multi-part film (CD1/CD2 files) plays only the part you start in.
 - Subtitles embedded in the file always work. Sidecar subtitle files next to
   the video reach the Zidoo player only when it plays from the share through a
