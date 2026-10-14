@@ -104,6 +104,22 @@ class ZidooPlaybackMonitorTest {
     }
 
     @Test
+    fun keepsWaitingPastTheTimeoutWhileTheCallerSeesThePlayerFetching() = runBlocking {
+        val player = ScriptedPlayer()
+        var polls = 0
+        val api = object : ZidooPlayerApi by player {
+            override suspend fun status(): ZidooPlayStatus? = player.status().also { polls++ }
+        }
+
+        // Timeout after 3 polls, but the stream keeps flowing until poll 10.
+        val outcome = monitor(api, startupTimeoutMs = 3_000)
+            .run(onStarted = {}, onSample = {}, keepWaiting = { polls < 10 })
+
+        assertEquals(ZidooMonitorOutcome.PlayerDidNotStart, outcome)
+        assertEquals(10, polls)
+    }
+
+    @Test
     fun givingUpOnlyAppliesBeforeTheVideoLoads() = runBlocking {
         val player = ScriptedPlayer(null, playing(5_000), playing(6_000), null, null, null)
         var polls = 0

@@ -16,6 +16,7 @@ import java.net.URL
 import java.security.SecureRandom
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Serves one Silo stream to the Zidoo player on this box, at
@@ -56,6 +57,28 @@ class ZidooStreamRelay(
 
     @Volatile
     private var closed = false
+
+    private val served = AtomicLong(0)
+
+    @Volatile
+    private var firstServedAtMs = 0L
+
+    @Volatile
+    private var lastServedAtMs = 0L
+
+    /** Media bytes sent to the player so far. */
+    val bytesServed: Long get() = served.get()
+
+    /** True when the player received media within the last [windowMs]: it is playing, or buffering to play. */
+    fun servedWithin(windowMs: Long): Boolean =
+        lastServedAtMs != 0L && System.currentTimeMillis() - lastServedAtMs <= windowMs
+
+    /**
+     * True when the player kept receiving media over at least [spanMs]. Opening
+     * a file the player then refuses takes seconds; this means it played.
+     */
+    fun servedForAtLeast(spanMs: Long): Boolean =
+        firstServedAtMs != 0L && lastServedAtMs - firstServedAtMs >= spanMs
 
     /** The address to give the Zidoo player. */
     val url: String = "http://$LOOPBACK:${server.localPort}$path"
@@ -135,7 +158,7 @@ class ZidooStreamRelay(
             output.write(header.toString().toByteArray(Charsets.ISO_8859_1))
             if (request.method == "GET") {
                 val body: InputStream? = if (code >= 400) connection.errorStream else connection.inputStream
-                body?.use { it.copyTo(output, BUFFER_BYTES) }
+                body?.use { copyCounting(it, output, media = code < 300) }
             }
             output.flush()
         } catch (_: IOException) {
@@ -144,6 +167,21 @@ class ZidooStreamRelay(
             if (!responseStarted) writeSimple(output, 502, "Bad Gateway")
         } finally {
             connection?.disconnect()
+        }
+    }
+
+    private fun copyCounting(from: InputStream, to: OutputStream, media: Boolean) {
+        val buffer = ByteArray(BUFFER_BYTES)
+        while (true) {
+            val read = from.read(buffer)
+            if (read < 0) return
+            if (media) {
+                val now = System.currentTimeMillis()
+                if (firstServedAtMs == 0L) firstServedAtMs = now
+                lastServedAtMs = now
+                served.addAndGet(read.toLong())
+            }
+            to.write(buffer, 0, read)
         }
     }
 

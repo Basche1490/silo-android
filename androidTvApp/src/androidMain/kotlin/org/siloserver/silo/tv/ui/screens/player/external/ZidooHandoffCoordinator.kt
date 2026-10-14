@@ -379,6 +379,10 @@ class ZidooHandoffCoordinator(
                 try {
                     monitor.run(
                         giveUpStarting = playerNotComing::get,
+                        // A player still fetching the video through the relay is
+                        // starting or playing, even while its status says nothing;
+                        // giving up then would stop the session under it.
+                        keepWaiting = { relay?.servedWithin(RELAY_ACTIVE_WINDOW_MS) == true },
                         onStarted = { setState(runId, ZidooHandoffState.Playing(runId, title)) },
                         onSample = { sample ->
                             if (sample.paused != zidooPaused) {
@@ -399,7 +403,11 @@ class ZidooHandoffCoordinator(
                 }
             }
             when (outcome) {
-                ZidooMonitorOutcome.PlayerDidNotStart -> return fail(
+                ZidooMonitorOutcome.PlayerDidNotStart -> return if (relay?.servedForAtLeast(UNTRACKED_PLAYBACK_MIN_MS) == true) {
+                    // It streamed for minutes, so it played; its status never
+                    // answered, so Silo could not follow it.
+                    fail(runId, UNTRACKED_PLAYBACK_MESSAGE, canPlayInSilo = false)
+                } else fail(
                     runId,
                     PLAYER_DID_NOT_START_MESSAGE,
                     canPlayInSilo = true,
@@ -573,6 +581,17 @@ class ZidooHandoffCoordinator(
 
         /** The screen adds what PlexToZidoo was given and what to check. */
         const val PLAYER_DID_NOT_START_MESSAGE = "The Zidoo player didn't play this file."
+
+        const val UNTRACKED_PLAYBACK_MESSAGE =
+            "The Zidoo player played this, but Silo couldn't read its position, so it didn't save your place " +
+                "or skip markers. Silo reads it from the Zidoo player's control interface, which needs firmware " +
+                "6.4.42 or later (1.1.42 or later on the Z9X 8K line)."
+
+        /** How recently the relay must have sent media for the player to count as fetching. */
+        private const val RELAY_ACTIVE_WINDOW_MS = 20_000L
+
+        /** How long the relay must have streamed for a run the status never confirmed to count as played. */
+        private const val UNTRACKED_PLAYBACK_MIN_MS = 90_000L
 
         /** `scheme://host[:port]` of [url], for telling the user which server the Zidoo player had to reach. */
         internal fun originOf(url: String): String {

@@ -45,14 +45,18 @@ class ZidooPlaybackMonitor(
      * [onSample] runs for each reading with a real position.
      * [giveUpStarting] is asked after each startup poll that finds no video;
      * true ends the wait before [startupTimeoutMs], for when the caller knows
-     * the player has already closed.
+     * the player has already closed. [keepWaiting] is asked once the timeout
+     * has passed; true extends the wait, for when the caller can see the
+     * player fetching the video although its status does not show it yet.
      */
     suspend fun run(
         onStarted: suspend () -> Unit,
         onSample: (ZidooSample) -> Unit,
         giveUpStarting: () -> Boolean = { false },
+        keepWaiting: () -> Boolean = { false },
     ): ZidooMonitorOutcome {
-        var status: ZidooPlayStatus = awaitPlayerStart(giveUpStarting) ?: return ZidooMonitorOutcome.PlayerDidNotStart
+        var status: ZidooPlayStatus = awaitPlayerStart(giveUpStarting, keepWaiting)
+            ?: return ZidooMonitorOutcome.PlayerDidNotStart
         onStarted()
 
         var lastPositionMs = 0L
@@ -71,16 +75,17 @@ class ZidooPlaybackMonitor(
 
     /**
      * Polls until the player reports a loaded video. Null once [startupTimeoutMs]
-     * has passed, or sooner when [giveUp] says the player is not coming.
+     * has passed and [keepWaiting] says nothing is happening, or as soon as
+     * [giveUp] says the player is not coming.
      */
-    private suspend fun awaitPlayerStart(giveUp: () -> Boolean): ZidooPlayStatus? {
+    private suspend fun awaitPlayerStart(giveUp: () -> Boolean, keepWaiting: () -> Boolean): ZidooPlayStatus? {
         var waitedMs = 0L
         while (true) {
             pause(pollIntervalMs)
             waitedMs += pollIntervalMs
             val reading = api.status()
             if (reading != null && reading.durationMs > 0L) return reading
-            if (waitedMs >= startupTimeoutMs || giveUp()) return null
+            if (giveUp() || waitedMs >= startupTimeoutMs && !keepWaiting()) return null
         }
     }
 
