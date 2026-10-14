@@ -26,6 +26,13 @@ val externalPlayerTvModule = module {
                 override fun write(key: String, value: Boolean) {
                     prefs.edit().putBoolean(key, value).apply()
                 }
+
+                override fun readInt(key: String): Int? =
+                    if (prefs.contains(key)) prefs.getInt(key, 0) else null
+
+                override fun writeInt(key: String, value: Int) {
+                    prefs.edit().putInt(key, value).apply()
+                }
             },
         )
     }

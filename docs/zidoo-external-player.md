@@ -22,8 +22,9 @@ Silo still tracks the playback:
 - **Up Next.** When an episode plays to the end (into the credits, or its
   last half minute), Silo shows the next one, from this season or the next.
   With Settings → Playback → Auto-Play Next Episode on, it opens in the Zidoo
-  player after Silo's usual 10-second countdown; **Play Now** starts it
-  straight away and **Back** returns to the show. The Still Watching Prompt applies as in
+  player after a countdown, 10 seconds unless you change **Settings →
+  External Player → Up Next Countdown** (right away, or 3 to 30 seconds).
+  **Play Now** starts it straight away and **Back** returns to the show. The Still Watching Prompt applies as in
   Silo's own player: after that many episodes in a row, Silo waits for Play
   Now.
 - **The file as it is.** Silo asks the server to plan for the Zidoo player,
@@ -59,7 +60,8 @@ remember the profile or change Profile Selection in Settings.
 1. In **Silo → Settings → External Player**, turn on **Play in Zidoo Player**,
    and choose whether to skip intros and credits automatically. Intro skipping
    starts on; credits skipping starts off, because on a film it jumps past any
-   scene after the credits.
+   scene after the credits. **Up Next Countdown** sets how long Up Next waits
+   before the next episode.
 2. Play something.
 
 That is all most setups need. The Zidoo player streams the original file from
