@@ -17,7 +17,9 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -30,7 +32,9 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.tv.material3.Text
+import kotlinx.coroutines.delay
 import org.koin.compose.koinInject
+import org.siloserver.silo.common.settings.PlayerSettingsStore
 import org.siloserver.silo.common.player.video.VideoPlaybackStartRequest
 import org.siloserver.silo.tv.ui.components.TvDialogAction
 import org.siloserver.silo.tv.ui.components.TvDialogActionStyle
@@ -50,7 +54,10 @@ fun TvExternalPlayerScreen(
     request: VideoPlaybackStartRequest,
     onExit: () -> Unit,
     onPlayInSilo: () -> Unit,
+    autoAdvanceCount: Int = 0,
+    onPlayNextEpisode: (contentId: String, autoAdvanceCount: Int) -> Unit = { _, _ -> onExit() },
     coordinator: ZidooHandoffCoordinator = koinInject(),
+    playerSettings: PlayerSettingsStore = koinInject(),
 ) {
     val context = LocalContext.current
     val state by coordinator.state.collectAsState()
@@ -70,7 +77,7 @@ fun TvExternalPlayerScreen(
 
     LaunchedEffect(state, runId) {
         val current = state
-        if (runId != 0L && current is ZidooHandoffState.Finished && current.runId == runId) {
+        if (runId != 0L && current is ZidooHandoffState.Finished && current.runId == runId && current.upNext == null) {
             coordinator.acknowledge(runId)
             onExit()
         }
@@ -121,6 +128,24 @@ fun TvExternalPlayerScreen(
                 },
             )
 
+            is ZidooHandoffState.Finished -> current.upNext?.let { next ->
+                UpNextCard(
+                    next = next,
+                    autoAdvanceCount = autoAdvanceCount,
+                    playerSettings = playerSettings,
+                    onPlay = { automatic ->
+                        coordinator.acknowledge(runId)
+                        // Play Now is someone watching: it resets the
+                        // "still watching?" count, as in Silo's own player.
+                        onPlayNextEpisode(next.contentId, if (automatic) autoAdvanceCount + 1 else 0)
+                    },
+                    onBack = {
+                        coordinator.acknowledge(runId)
+                        onExit()
+                    },
+                )
+            } ?: Progress(title = null, status = "Getting ready…")
+
             is ZidooHandoffState.Playing -> TvDialogCard(
                 title = current.title,
                 message = "Playing in the Zidoo player. Silo saves your place and skips markers until it closes.",
@@ -137,12 +162,59 @@ fun TvExternalPlayerScreen(
             is ZidooHandoffState.Launched -> Progress(current.title, "Opening the Zidoo player…")
             is ZidooHandoffState.Saving -> Progress(current.title, "Saving your progress…")
             is ZidooHandoffState.Preparing,
-            is ZidooHandoffState.Finished,
             ZidooHandoffState.Idle,
             -> Progress(title = null, status = "Getting ready…")
         }
     }
 }
+
+/**
+ * Up Next after an episode the Zidoo player finished, as Silo's own player
+ * shows it: with auto-play on, the next episode starts after a
+ * [UP_NEXT_COUNTDOWN_SECONDS]-second countdown; with it off, or once the
+ * "still watching?" limit is reached, it waits for Play Now.
+ */
+@Composable
+private fun UpNextCard(
+    next: ZidooHandoffState.UpNextEpisode,
+    autoAdvanceCount: Int,
+    playerSettings: PlayerSettingsStore,
+    onPlay: (automatic: Boolean) -> Unit,
+    onBack: () -> Unit,
+) {
+    val autoPlay by playerSettings.autoPlayNextFlow.collectAsState(initial = null)
+    val passOutThreshold by playerSettings.passOutThresholdFlow.collectAsState(initial = null)
+    val threshold = passOutThreshold
+    // Threshold 0 is off. Both settings are read before anything counts down.
+    val stillWatching = threshold != null && threshold > 0 && autoAdvanceCount >= threshold
+    val countdownOn = autoPlay == true && threshold != null && !stillWatching
+    var remaining by remember(next.contentId) { mutableIntStateOf(UP_NEXT_COUNTDOWN_SECONDS) }
+    LaunchedEffect(next.contentId, countdownOn) {
+        if (!countdownOn) return@LaunchedEffect
+        while (remaining > 0) {
+            delay(1_000)
+            remaining -= 1
+        }
+        onPlay(true)
+    }
+    val detail = when {
+        countdownOn -> "\nPlays in $remaining s in the Zidoo player."
+        autoPlay == true && stillWatching -> "\nStill watching? Choose Play Now to keep going."
+        else -> ""
+    }
+    TvDialogCard(
+        title = "Up Next",
+        message = next.label + detail,
+        actions = listOf(
+            TvDialogAction("Play Now", { onPlay(false) }, TvDialogActionStyle.Primary),
+            TvDialogAction("Back", onBack),
+        ),
+        initialFocusIndex = 0,
+    )
+}
+
+/** Silo's own player counts down this long before the next episode (TvPlayerViewModel.NEXT_UP_COUNTDOWN_SECONDS). */
+private const val UP_NEXT_COUNTDOWN_SECONDS = 10
 
 @Composable
 private fun FailedCard(

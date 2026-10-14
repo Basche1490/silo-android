@@ -46,6 +46,7 @@ val externalPlayerTvModule = module {
             // Plan for the Zidoo player, so the server sends the file untouched
             // instead of converting it for Silo's own player.
             zidooStartParams = startParams::forRequest,
+            catalogRepository = get(),
         )
     }
 }

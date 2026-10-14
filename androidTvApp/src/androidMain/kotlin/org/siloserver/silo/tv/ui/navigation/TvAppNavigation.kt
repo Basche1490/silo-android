@@ -1576,9 +1576,26 @@ fun TvAppNavigation(
                         roomId = roomId,
                         castLaunchId = castLaunchId,
                         shuffleId = backStack.arguments?.getString(TvRoute.Player.ARG_SHUFFLE_ID),
+                        autoAdvanceCount = autoAdvanceCount,
                     ),
                     onExit = {
                         if (navController.currentBackStackEntry?.id == backStack.id) navController.popBackStack()
+                    },
+                    // Up Next: the next episode replaces this one, from the
+                    // start, as Silo's own player advances.
+                    onPlayNextEpisode = { nextContentId, nextAutoAdvanceCount ->
+                        if (navController.currentBackStackEntry?.id == backStack.id) {
+                            navController.navigate(
+                                TvRoute.Player(
+                                    contentId = nextContentId,
+                                    resumePositionSeconds = 0.0,
+                                    autoAdvanceCount = nextAutoAdvanceCount,
+                                    libraryId = backStack.arguments?.getString("libraryId")?.toIntOrNull(),
+                                ).route,
+                            ) {
+                                popUpTo(TvRoute.Player.ROUTE) { inclusive = true }
+                            }
+                        }
                     },
                 )
             ) {

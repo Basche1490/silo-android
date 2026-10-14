@@ -9,6 +9,12 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.withTimeoutOrNull
+import org.siloserver.silo.network.ApiResult
+import org.siloserver.silo.playback.nextEpisodeAfter
+import org.siloserver.silo.repository.CatalogRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -65,7 +71,11 @@ sealed interface ZidooHandoffState {
     /** The Zidoo player closed; sending the final position to the server. */
     data class Saving(override val runId: Long, val title: String) : ZidooHandoffState
 
-    data class Finished(override val runId: Long) : ZidooHandoffState
+    /** [upNext] is the next episode to offer, when an episode played to its end and has one. */
+    data class Finished(override val runId: Long, val upNext: UpNextEpisode? = null) : ZidooHandoffState
+
+    /** The episode after the one that just finished, as Silo's own Up Next names it. */
+    data class UpNextEpisode(val contentId: String, val label: String)
 
     data class Failed(
         override val runId: Long,
@@ -149,6 +159,8 @@ class ZidooHandoffCoordinator(
     private val zidooStartParams: suspend (VideoPlaybackStartRequest) -> StartParams? = { null },
     private val newRelay: (upstream: String, fileName: String, accessToken: () -> String?) -> ZidooStreamRelay =
         { upstream, fileName, accessToken -> ZidooStreamRelay(upstream, fileName, accessToken) },
+    /** Looks up the next episode for Up Next; null leaves Up Next out. */
+    private val catalogRepository: CatalogRepository? = null,
 ) {
     private val _state = MutableStateFlow<ZidooHandoffState>(ZidooHandoffState.Idle)
     val state: StateFlow<ZidooHandoffState> = _state.asStateFlow()
@@ -265,6 +277,7 @@ class ZidooHandoffCoordinator(
         var sessionClosed = false
         var launched = false
         var relay: ZidooStreamRelay? = null
+        var nextEpisode: Deferred<ZidooHandoffState.UpNextEpisode?>? = null
         try {
             // Checked first, so a box without PlexToZidoo never opens a server session.
             if (!plexToZidooInstalled()) return fail(runId, NOT_INSTALLED_MESSAGE, canPlayInSilo = true)
@@ -307,6 +320,10 @@ class ZidooHandoffCoordinator(
             val directLink = upstream?.takeIf { ready.accessToken.isNotBlank() }
                 ?.let { PlexToZidooLaunch.withQueryParameter(it, "token", ready.accessToken) }
             val streamUrl = relay?.url ?: directLink
+
+            // Looked up while the episode plays, so Up Next is ready the
+            // moment the Zidoo player closes.
+            nextEpisode = scope.async { findNextEpisode(ready, request.libraryId) }
 
             val subtitleTracks = version?.subtitleTracks.orEmpty()
             val title = displayTitle(ready)
@@ -430,7 +447,13 @@ class ZidooHandoffCoordinator(
                     val stopped = withContext(NonCancellable) { sessionLifecycle.stop(expectedSessionId = id) }
                     if (!stopped) Log.w(TAG, "Another playback took over before the final position was saved")
                     sessionClosed = true
-                    setState(runId, ZidooHandoffState.Finished(runId))
+                    val lookup = nextEpisode
+                    val upNext = if (lookup != null && reachedEnd(outcome, ready)) {
+                        withTimeoutOrNull(UP_NEXT_LOOKUP_WAIT_MS) { lookup.await() }
+                    } else {
+                        null
+                    }
+                    setState(runId, ZidooHandoffState.Finished(runId, upNext))
                 }
             }
         } catch (e: CancellationException) {
@@ -440,6 +463,7 @@ class ZidooHandoffCoordinator(
             fail(runId, "Something went wrong handing playback to the Zidoo player.", canPlayInSilo = true)
         } finally {
             relay?.close()
+            nextEpisode?.cancel()
             launcher.set(null)
             val unclosed = sessionId?.takeUnless { sessionClosed }
             if (unclosed != null) withContext(NonCancellable) { retire(unclosed) }
@@ -517,6 +541,59 @@ class ZidooHandoffCoordinator(
         return url.takeIf { it.startsWith("http://", ignoreCase = true) || it.startsWith("https://", ignoreCase = true) }
     }
 
+    /**
+     * Whether the episode played to its end, the point where Silo's own player
+     * offers Up Next: into the credits by the server's marker, or within the
+     * last half minute when there is none.
+     */
+    private fun reachedEnd(outcome: ZidooMonitorOutcome.Finished, ready: VideoPlaybackStartResult.Ready): Boolean {
+        val position = outcome.lastPositionMs
+        val duration = outcome.durationMs
+        if (position <= 0L || duration <= 0L) return false
+        val creditsStartMs = ready.credits?.start?.takeIf { it > 0.0 }?.let { (it * 1000).toLong() }
+        return settledPositionMs(position, duration) >= duration ||
+            duration - position <= END_WINDOW_MS ||
+            creditsStartMs != null && position >= creditsStartMs
+    }
+
+    /**
+     * The episode after [ready]'s, from the current season and the next regular
+     * one, exactly as Silo's own Up Next finds it. Null for a film, at the end
+     * of a series, or when the catalog can't be read.
+     */
+    private suspend fun findNextEpisode(
+        ready: VideoPlaybackStartResult.Ready,
+        libraryId: Int?,
+    ): ZidooHandoffState.UpNextEpisode? {
+        val catalog = catalogRepository ?: return null
+        val seriesId = ready.seriesId ?: return null
+        val season = ready.seasonNumber ?: return null
+        val episode = ready.episodeNumber ?: return null
+        return try {
+            val pool = (catalog.getEpisodes(seriesId, season, libraryId = libraryId) as? ApiResult.Success)
+                ?.data?.episodes?.toMutableList() ?: return null
+            val nextSeason = (catalog.getSeasons(seriesId, libraryId = libraryId) as? ApiResult.Success)
+                ?.data?.seasons
+                ?.filter { !it.isSpecials && it.seasonNumber > season }
+                ?.minByOrNull { it.seasonNumber }
+            if (nextSeason != null) {
+                (catalog.getEpisodes(seriesId, nextSeason.seasonNumber, libraryId = libraryId) as? ApiResult.Success)
+                    ?.data?.episodes?.let { pool += it }
+            }
+            val next = nextEpisodeAfter(pool, season, episode) ?: return null
+            val name = next.title?.takeIf { it.isNotBlank() }
+            ZidooHandoffState.UpNextEpisode(
+                contentId = next.contentId,
+                label = "S%02dE%02d".format(next.seasonNumber, next.episodeNumber) + (name?.let { " · $it" } ?: ""),
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not look up the next episode", e)
+            null
+        }
+    }
+
     /** Starts the relay for [upstream]; null, and a log line, when this box will not let it listen. */
     private fun startRelay(upstream: String, path: String?, ready: VideoPlaybackStartResult.Ready): ZidooStreamRelay? =
         try {
@@ -586,6 +663,12 @@ class ZidooHandoffCoordinator(
             "The Zidoo player played this, but Silo couldn't read its position, so it didn't save your place " +
                 "or skip markers. Silo reads it from the Zidoo player's control interface, which needs firmware " +
                 "6.4.42 or later (1.1.42 or later on the Z9X 8K line)."
+
+        /** Without a credits marker, how close to the end a stop still counts as the end. */
+        private const val END_WINDOW_MS = 30_000L
+
+        /** How long the end of a run waits for an Up Next lookup still in flight. */
+        private const val UP_NEXT_LOOKUP_WAIT_MS = 5_000L
 
         /** How recently the relay must have sent media for the player to count as fetching. */
         private const val RELAY_ACTIVE_WINDOW_MS = 20_000L

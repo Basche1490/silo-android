@@ -25,6 +25,8 @@ data class ZidooHandoffArgs(
     val roomId: String?,
     val castLaunchId: String?,
     val shuffleId: String?,
+    /** Episodes auto-played in a row before this one, for the "still watching?" limit. */
+    val autoAdvanceCount: Int = 0,
 )
 
 /**
@@ -43,6 +45,8 @@ fun handOffToZidooIfEnabled(
     entryId: String,
     args: ZidooHandoffArgs,
     onExit: () -> Unit,
+    /** Opens the player for the next episode in place of this one; the count is for the next one. */
+    onPlayNextEpisode: (contentId: String, autoAdvanceCount: Int) -> Unit = { _, _ -> onExit() },
     settings: ExternalPlayerSettings = koinInject(),
 ): Boolean {
     var playExternally by rememberSaveable(entryId) {
@@ -76,6 +80,8 @@ fun handOffToZidooIfEnabled(
         request = request,
         onExit = onExit,
         onPlayInSilo = { playExternally = false },
+        autoAdvanceCount = args.autoAdvanceCount,
+        onPlayNextEpisode = onPlayNextEpisode,
     )
     return true
 }
