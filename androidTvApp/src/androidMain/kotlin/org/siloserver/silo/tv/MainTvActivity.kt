@@ -107,6 +107,14 @@ class MainTvActivity : ComponentActivity() {
         const val DEEP_LINK_TAG = "SiloDeepLink"
     }
 
+    // [zidoo-fork] Zidoo players report a low screen density, which shrinks the
+    // whole interface; lay it out at Android TV's standard size instead.
+    override fun attachBaseContext(newBase: android.content.Context) {
+        super.attachBaseContext(newBase)
+        org.siloserver.silo.tv.ui.screens.player.external.TvInterfaceScale.overrideConfiguration(newBase)
+            ?.let(::applyOverrideConfiguration)
+    }
+
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         // "Keys do nothing" with no other SiloTvFocus lines afterwards means

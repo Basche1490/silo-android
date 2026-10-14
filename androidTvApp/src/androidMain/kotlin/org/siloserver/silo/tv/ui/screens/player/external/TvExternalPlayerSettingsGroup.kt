@@ -1,5 +1,8 @@
 package org.siloserver.silo.tv.ui.screens.player.external
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -23,6 +26,7 @@ internal fun TvExternalPlayerSettingsGroup(
     val enabled by settings.enabled.collectAsState()
     val skipIntro by settings.skipIntro.collectAsState()
     val skipCredits by settings.skipCredits.collectAsState()
+    val fitToTv by settings.fitToTv.collectAsState()
     // Checked again on each toggle, so installing PlexToZidoo and coming back is noticed.
     val plexToZidooInstalled = remember(enabled) { isPlexToZidooInstalled(context) }
     SettingsGroup(title = "External Player") {
@@ -55,4 +59,25 @@ internal fun TvExternalPlayerSettingsGroup(
             },
         )
     }
+    SettingsGroup(title = "Interface Size") {
+        SettingsToggleRow(
+            label = "Fit Interface to TV",
+            checked = fitToTv,
+            onCheckedChange = { value ->
+                settings.setFitToTv(value)
+                // The size is set as the screen is created, so rebuild it.
+                context.findActivity()?.recreate()
+            },
+        )
+        SettingsFooterText(
+            text = "Shows Silo at the standard Android TV size on players that shrink apps with a lower " +
+                "screen density, such as Zidoo. Turn off to use the player's own size.",
+        )
+    }
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }
