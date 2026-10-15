@@ -12,11 +12,9 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketException
 import java.net.URI
-import java.net.URL
 import java.security.SecureRandom
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Serves one Silo stream to the Zidoo player on this box, at
@@ -48,7 +46,6 @@ class ZidooStreamRelay(
     private val accessToken: () -> String?,
     /** Upper bound for waiting on a renewed token after the server refused one. */
     private val tokenRenewalWaitMs: Long = 15_000L,
-    private val openConnection: (URL) -> HttpURLConnection = { it.openConnection() as HttpURLConnection },
 ) : Closeable {
 
     private val path = "/" + randomSecret() + "/" + safeFileName(fileName)
@@ -58,16 +55,11 @@ class ZidooStreamRelay(
     @Volatile
     private var closed = false
 
-    private val served = AtomicLong(0)
-
     @Volatile
     private var firstServedAtMs = 0L
 
     @Volatile
     private var lastServedAtMs = 0L
-
-    /** Media bytes sent to the player so far. */
-    val bytesServed: Long get() = served.get()
 
     /** True when the player received media within the last [windowMs]: it is playing, or buffering to play. */
     fun servedWithin(windowMs: Long): Boolean =
@@ -179,14 +171,13 @@ class ZidooStreamRelay(
                 val now = System.currentTimeMillis()
                 if (firstServedAtMs == 0L) firstServedAtMs = now
                 lastServedAtMs = now
-                served.addAndGet(read.toLong())
             }
             to.write(buffer, 0, read)
         }
     }
 
     private fun openUpstream(request: Request, token: String?): HttpURLConnection =
-        openConnection(URI(upstreamUrl).toURL()).apply {
+        (URI(upstreamUrl).toURL().openConnection() as HttpURLConnection).apply {
             requestMethod = request.method
             instanceFollowRedirects = true
             connectTimeout = UPSTREAM_CONNECT_TIMEOUT_MS

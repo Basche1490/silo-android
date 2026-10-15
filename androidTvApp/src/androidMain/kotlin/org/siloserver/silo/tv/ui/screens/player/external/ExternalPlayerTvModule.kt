@@ -47,13 +47,13 @@ val externalPlayerTvModule = module {
             sessionManager = get(),
             settings = get(),
             zidoo = get(),
-            // Zidoo playback is playback on another screen: tell the profile
-            // tracker when it pauses, resumes or ends, as the phone does for Cast.
-            onPlaybackActivityChanged = { get<ProfileAwayTracker>().onRemotePlaybackChanged() },
+            catalogRepository = get(),
             // Plan for the Zidoo player, so the server sends the file untouched
             // instead of converting it for Silo's own player.
             zidooStartParams = startParams::forRequest,
-            catalogRepository = get(),
+            // Zidoo playback is playback on another screen: tell the profile
+            // tracker when it pauses, resumes or ends, as the phone does for Cast.
+            onPlaybackActivityChanged = { get<ProfileAwayTracker>().onRemotePlaybackChanged() },
         )
     }
 }

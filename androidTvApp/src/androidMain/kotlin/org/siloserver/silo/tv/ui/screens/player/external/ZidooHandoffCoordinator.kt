@@ -116,8 +116,9 @@ internal fun ZidooHandoffState.isActive(): Boolean = when (this) {
  * 1. Start a normal Silo playback session. That session is what records resume
  *    progress, and it supplies the file path, the resume point, the audio and
  *    subtitle choice, and the intro and credits markers.
- * 2. Open PlexToZidoo, which maps the server path to the user's SMB or NFS
- *    share and starts the Zidoo player at the resume point.
+ * 2. Open PlexToZidoo, which starts the Zidoo player at the resume point on
+ *    Silo's stream (through [ZidooStreamRelay]), or on the user's SMB or NFS
+ *    share when one of PlexToZidoo's path substitutions matches the file.
  * 3. Read the Zidoo player's position every second: skip the intro or credits
  *    when they are reached, and feed the position to the session.
  * 4. When the Zidoo player closes, send the final position and stop the
@@ -134,34 +135,23 @@ class ZidooHandoffCoordinator(
     private val sessionManager: PlaybackSessionManager,
     private val settings: ExternalPlayerSettings,
     private val zidoo: ZidooPlayerApi,
-    private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
-    private val plexToZidooInstalled: () -> Boolean = { isPlexToZidooInstalled(appContext) },
+    /** Looks up the next episode for Up Next. */
+    private val catalogRepository: CatalogRepository,
+    /**
+     * The capabilities the session is planned for: the Zidoo player's rather
+     * than Silo's own, so the server sends the file untouched. A failure plans
+     * for Silo's player, as the starter normally does.
+     */
+    private val zidooStartParams: suspend (VideoPlaybackStartRequest) -> StartParams,
     /**
      * Told whenever [isHandingOff] may have changed: the Zidoo player paused or
      * resumed, or a hand-off ended. The TV app forwards it to the profile
      * tracker, as the phone does for Cast. Called on the coordinator's scope.
      */
-    private val onPlaybackActivityChanged: () -> Unit = {},
-    /**
-     * How long after a hand-off ends before [onPlaybackActivityChanged] hears
-     * about it. Silo normally comes back to the front within a second of the
-     * Zidoo player closing; waiting lets that return land first, so coming
-     * back from a film is treated the same way every time.
-     */
-    private val endNoticeDelayMs: Long = 5_000L,
-    private val newMonitor: (ZidooPlayerApi, ZidooSkipPlanner) -> ZidooPlaybackMonitor =
-        { api, planner -> ZidooPlaybackMonitor(api, planner) },
-    /**
-     * The capabilities the session is planned for: the Zidoo player's rather
-     * than Silo's own, so the server sends the file untouched. Null, or a
-     * failure, plans for Silo's player as the starter normally does.
-     */
-    private val zidooStartParams: suspend (VideoPlaybackStartRequest) -> StartParams? = { null },
-    private val newRelay: (upstream: String, fileName: String, accessToken: () -> String?) -> ZidooStreamRelay =
-        { upstream, fileName, accessToken -> ZidooStreamRelay(upstream, fileName, accessToken) },
-    /** Looks up the next episode for Up Next; null leaves Up Next out. */
-    private val catalogRepository: CatalogRepository? = null,
+    private val onPlaybackActivityChanged: () -> Unit,
 ) {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
     private val _state = MutableStateFlow<ZidooHandoffState>(ZidooHandoffState.Idle)
     val state: StateFlow<ZidooHandoffState> = _state.asStateFlow()
 
@@ -280,7 +270,7 @@ class ZidooHandoffCoordinator(
         var nextEpisode: Deferred<ZidooHandoffState.UpNextEpisode?>? = null
         try {
             // Checked first, so a box without PlexToZidoo never opens a server session.
-            if (!plexToZidooInstalled()) return fail(runId, NOT_INSTALLED_MESSAGE, canPlayInSilo = true)
+            if (!isPlexToZidooInstalled(appContext)) return fail(runId, NOT_INSTALLED_MESSAGE, canPlayInSilo = true)
 
             val ready = when (val result = starter.start(withZidooCapabilities(request))) {
                 is VideoPlaybackStartResult.Ready -> result
@@ -366,7 +356,7 @@ class ZidooHandoffCoordinator(
             }
             launched = true
 
-            val monitor = newMonitor(
+            val monitor = ZidooPlaybackMonitor(
                 zidoo,
                 ZidooSkipPlanner(
                     intro = ready.intro?.toSkipRange(),
@@ -475,7 +465,7 @@ class ZidooHandoffCoordinator(
             zidooPaused = false
             if (launched) {
                 scope.launch {
-                    delay(endNoticeDelayMs)
+                    delay(END_NOTICE_DELAY_MS)
                     onPlaybackActivityChanged()
                 }
             }
@@ -565,19 +555,18 @@ class ZidooHandoffCoordinator(
         ready: VideoPlaybackStartResult.Ready,
         libraryId: Int?,
     ): ZidooHandoffState.UpNextEpisode? {
-        val catalog = catalogRepository ?: return null
         val seriesId = ready.seriesId ?: return null
         val season = ready.seasonNumber ?: return null
         val episode = ready.episodeNumber ?: return null
         return try {
-            val pool = (catalog.getEpisodes(seriesId, season, libraryId = libraryId) as? ApiResult.Success)
+            val pool = (catalogRepository.getEpisodes(seriesId, season, libraryId = libraryId) as? ApiResult.Success)
                 ?.data?.episodes?.toMutableList() ?: return null
-            val nextSeason = (catalog.getSeasons(seriesId, libraryId = libraryId) as? ApiResult.Success)
+            val nextSeason = (catalogRepository.getSeasons(seriesId, libraryId = libraryId) as? ApiResult.Success)
                 ?.data?.seasons
                 ?.filter { !it.isSpecials && it.seasonNumber > season }
                 ?.minByOrNull { it.seasonNumber }
             if (nextSeason != null) {
-                (catalog.getEpisodes(seriesId, nextSeason.seasonNumber, libraryId = libraryId) as? ApiResult.Success)
+                (catalogRepository.getEpisodes(seriesId, nextSeason.seasonNumber, libraryId = libraryId) as? ApiResult.Success)
                     ?.data?.episodes?.let { pool += it }
             }
             val next = nextEpisodeAfter(pool, season, episode) ?: return null
@@ -597,11 +586,11 @@ class ZidooHandoffCoordinator(
     /** Starts the relay for [upstream]; null, and a log line, when this box will not let it listen. */
     private fun startRelay(upstream: String, path: String?, ready: VideoPlaybackStartResult.Ready): ZidooStreamRelay? =
         try {
-            newRelay(upstream, ZidooStreamRelay.fileNameFor(path, ready.container)) {
+            ZidooStreamRelay(upstream, ZidooStreamRelay.fileNameFor(path, ready.container), accessToken = {
                 // Read on each request, so a token the app renewed during the
                 // film is used as soon as it exists.
                 runBlocking { sessionManager.getAccessToken() } ?: ready.accessToken
-            }
+            })
         } catch (e: Exception) {
             Log.w(TAG, "Could not start the stream relay; giving the Zidoo player a direct link", e)
             null
@@ -635,7 +624,7 @@ class ZidooHandoffCoordinator(
         fun isHandingOffNow(): Boolean = current?.isHandingOff() == true
 
         /** The intent that opens PlexToZidoo for [request]; null when it has neither a path nor a stream. */
-        fun plexToZidooIntent(request: PlexToZidooLaunch.Request): Intent? {
+        private fun plexToZidooIntent(request: PlexToZidooLaunch.Request): Intent? {
             val uri = PlexToZidooLaunch.buildUri(request) ?: return null
             return Intent(Intent.ACTION_VIEW).apply {
                 setDataAndType(Uri.parse(uri), "video/*")
@@ -643,23 +632,23 @@ class ZidooHandoffCoordinator(
             }
         }
 
-        const val NO_PATH_MESSAGE =
+        private const val NO_PATH_MESSAGE =
             "Your Silo server would convert this file for this player rather than send the original, and " +
                 "it didn't share where the file is stored, so PlexToZidoo has nothing it can open. Sign in " +
                 "with an account that can see file paths (an admin, or one with the Metadata curation " +
                 "permission) and add a path substitution in PlexToZidoo."
 
-        const val NOT_INSTALLED_MESSAGE =
+        private const val NOT_INSTALLED_MESSAGE =
             "PlexToZidoo isn't installed on this player. Install it from " +
                 "github.com/bowlingbeeg/PlexToZidoo/releases, or turn off External Player in Settings."
 
-        const val LAUNCH_REFUSED_MESSAGE =
+        private const val LAUNCH_REFUSED_MESSAGE =
             "Android wouldn't open PlexToZidoo. Open PlexToZidoo once by itself, then try again."
 
         /** The screen adds what PlexToZidoo was given and what to check. */
-        const val PLAYER_DID_NOT_START_MESSAGE = "The Zidoo player didn't play this file."
+        private const val PLAYER_DID_NOT_START_MESSAGE = "The Zidoo player didn't play this file."
 
-        const val UNTRACKED_PLAYBACK_MESSAGE =
+        private const val UNTRACKED_PLAYBACK_MESSAGE =
             "The Zidoo player played this, but Silo couldn't read its position, so it didn't save your place " +
                 "or skip markers. Silo reads it from the Zidoo player's control interface, which needs firmware " +
                 "6.4.42 or later (1.1.42 or later on the Z9X 8K line)."
@@ -677,7 +666,7 @@ class ZidooHandoffCoordinator(
         private const val UNTRACKED_PLAYBACK_MIN_MS = 90_000L
 
         /** `scheme://host[:port]` of [url], for telling the user which server the Zidoo player had to reach. */
-        internal fun originOf(url: String): String {
+        private fun originOf(url: String): String {
             val schemeEnd = url.indexOf("://")
             if (schemeEnd < 0) return url
             val pathStart = url.indexOfAny(charArrayOf('/', '?', '#'), startIndex = schemeEnd + 3)
@@ -689,6 +678,14 @@ class ZidooHandoffCoordinator(
          * in front. The player is closed by then; this only absorbs a slow
          * status reading.
          */
-        const val RETURN_GRACE_MS = 2_000L
+        private const val RETURN_GRACE_MS = 2_000L
+
+        /**
+         * How long after a hand-off ends before onPlaybackActivityChanged hears
+         * about it. Silo normally comes back to the front within a second of the
+         * Zidoo player closing; waiting lets that return land first, so coming
+         * back from a film is treated the same way every time.
+         */
+        private const val END_NOTICE_DELAY_MS = 5_000L
     }
 }

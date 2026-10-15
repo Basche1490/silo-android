@@ -54,9 +54,8 @@ object PlexToZidooLaunch {
         val subtitleIndex: Int? = null,
         /**
          * What the Zidoo player opens when no substitution rule matches: Silo's
-         * stream of the original file, with its credentials in the query
-         * string, as Plex's links carry the Plex token. Null leaves
-         * [UNMAPPED_PLACEHOLDER] there instead.
+         * stream of the original file, normally the local relay's address
+         * ([ZidooStreamRelay]). Null leaves [UNMAPPED_PLACEHOLDER] there instead.
          */
         val streamUrl: String? = null,
     )

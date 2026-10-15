@@ -87,7 +87,6 @@ class ZidooStreamRelayTest {
         assertEquals("video/x-matroska", connection.getHeaderField("Content-Type"))
         assertEquals(body.size.toString(), connection.getHeaderField("Content-Length"))
         assertContentEquals(body, connection.inputStream.use { it.readBytes() })
-        assertEquals(body.size.toLong(), relay.bytesServed)
         assertTrue(relay.servedWithin(60_000))
         assertEquals("Bearer fresh", seenAuth.single())
         // The signed stream reference the server issued goes along unchanged.
@@ -149,7 +148,6 @@ class ZidooStreamRelayTest {
         assertEquals(404, open(wrongPath).responseCode)
         assertEquals(405, open(relay.url, method = "DELETE").responseCode)
         assertTrue(seenAuth.isEmpty(), "nothing reached the server")
-        assertEquals(0L, relay.bytesServed)
         assertTrue(!relay.servedWithin(60_000))
     }
 

@@ -14,8 +14,6 @@ data class SkipRange(val startSeconds: Double, val endSeconds: Double) {
 data class ZidooSkipSettings(
     val skipIntro: Boolean,
     val skipCredits: Boolean,
-    /** Added to both ends of a marker. Zero by default, as in the Kodi add-on. */
-    val offsetMs: Long = 0L,
 )
 
 enum class SkipKind { INTRO, CREDITS }
@@ -66,11 +64,8 @@ class ZidooSkipPlanner(
     private fun actionFor(kind: SkipKind, range: SkipRange?, positionMs: Long, durationMs: Long): SkipAction? {
         if (kind in done) return null
         val usable = range?.takeIf { it.isUsable } ?: return null
-        val start = max(0L, (usable.startSeconds * 1000.0).toLong() + settings.offsetMs)
-        val end = min(
-            ceil(usable.endSeconds * 1000.0).toLong() + settings.offsetMs,
-            durationMs - FINAL_MARGIN_MS,
-        )
+        val start = max(0L, (usable.startSeconds * 1000.0).toLong())
+        val end = min(ceil(usable.endSeconds * 1000.0).toLong(), durationMs - FINAL_MARGIN_MS)
         if (end <= start) return null
         if (positionMs < start || positionMs >= end) return null
         done.add(kind)

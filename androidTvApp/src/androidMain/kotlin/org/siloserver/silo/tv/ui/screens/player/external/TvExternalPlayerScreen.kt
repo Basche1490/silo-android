@@ -53,8 +53,8 @@ fun TvExternalPlayerScreen(
     request: VideoPlaybackStartRequest,
     onExit: () -> Unit,
     onPlayInSilo: () -> Unit,
-    autoAdvanceCount: Int = 0,
-    onPlayNextEpisode: (contentId: String, autoAdvanceCount: Int) -> Unit = { _, _ -> onExit() },
+    autoAdvanceCount: Int,
+    onPlayNextEpisode: (contentId: String, autoAdvanceCount: Int) -> Unit,
     coordinator: ZidooHandoffCoordinator = koinInject(),
     playerSettings: PlayerSettingsStore = koinInject(),
     externalSettings: ExternalPlayerSettings = koinInject(),
@@ -261,7 +261,7 @@ private fun FailedCard(
 }
 
 /** What to check, given what PlexToZidoo was sent, in PlexToZidoo's own setting names. */
-internal fun notPlayedHelp(notPlayed: ZidooHandoffState.NotPlayed): String {
+private fun notPlayedHelp(notPlayed: ZidooHandoffState.NotPlayed): String {
     val path = notPlayed.serverPath
     val origin = notPlayed.streamOrigin
     return when {
@@ -279,7 +279,7 @@ internal fun notPlayedHelp(notPlayed: ZidooHandoffState.NotPlayed): String {
 }
 
 /** What to enter in PlexToZidoo for [serverPath], using its own setting names. */
-internal fun substitutionHelp(serverPath: String): String {
+private fun substitutionHelp(serverPath: String): String {
     val prefix = examplePrefix(serverPath)
     val start = if (prefix != null) "the start of that path, such as $prefix" else "the start of that path"
     return "In PlexToZidoo, under Substitutions, set \u201cPart of the path to replace\u201d to $start, and " +
@@ -288,7 +288,7 @@ internal fun substitutionHelp(serverPath: String): String {
 }
 
 /** The first two folders of [serverPath] (for example `/mnt/media`), or null for a path without them. */
-internal fun examplePrefix(serverPath: String): String? {
+private fun examplePrefix(serverPath: String): String? {
     if (!serverPath.startsWith("/")) return null
     val folders = serverPath.split('/').filter { it.isNotEmpty() }.dropLast(1)
     if (folders.isEmpty()) return null

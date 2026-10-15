@@ -1,6 +1,5 @@
 package org.siloserver.silo.common.player.external
 
-import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -76,11 +75,7 @@ private fun JsonObject.number(key: String): Long? {
  *
  * `seekTo` takes its argument as `positon` (sic); that spelling is the API's.
  */
-class HttpZidooPlayerApi(
-    private val baseUrl: String = DEFAULT_BASE_URL,
-    private val io: CoroutineDispatcher = Dispatchers.IO,
-    private val timeoutMs: Int = 2_000,
-) : ZidooPlayerApi {
+class HttpZidooPlayerApi : ZidooPlayerApi {
 
     override suspend fun status(): ZidooPlayStatus? =
         get("ZidooVideoPlay/getPlayStatus")?.let(::parseZidooStatus)
@@ -91,13 +86,13 @@ class HttpZidooPlayerApi(
     override suspend fun stop(): Boolean =
         get("ZidooControlCenter/RemoteControl/sendkey?key=Key.MediaStop")?.let(::isZidooOk) ?: false
 
-    private suspend fun get(path: String): String? = withContext(io) {
+    private suspend fun get(path: String): String? = withContext(Dispatchers.IO) {
         var connection: HttpURLConnection? = null
         try {
-            connection = (URI("$baseUrl/$path").toURL().openConnection() as HttpURLConnection).apply {
+            connection = (URI("$BASE_URL/$path").toURL().openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
-                connectTimeout = timeoutMs
-                readTimeout = timeoutMs
+                connectTimeout = TIMEOUT_MS
+                readTimeout = TIMEOUT_MS
             }
             // Like the ZidooPlexMod add-on, read the body whatever the HTTP
             // status; the JSON's own `status` field decides success.
@@ -115,7 +110,8 @@ class HttpZidooPlayerApi(
         }
     }
 
-    companion object {
-        const val DEFAULT_BASE_URL = "http://127.0.0.1:9529"
+    private companion object {
+        const val BASE_URL = "http://127.0.0.1:9529"
+        const val TIMEOUT_MS = 2_000
     }
 }

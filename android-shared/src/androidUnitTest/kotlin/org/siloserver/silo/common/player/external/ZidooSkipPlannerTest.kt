@@ -71,17 +71,6 @@ class ZidooSkipPlannerTest {
     }
 
     @Test
-    fun appliesTheOffsetToBothEnds() {
-        val planner = planner(ZidooSkipSettings(skipIntro = true, skipCredits = false, offsetMs = 2_000))
-
-        assertNull(planner.nextAction(positionMs = 31_999, durationMs = 3_600_000))
-        assertEquals(
-            SkipAction(SkipKind.INTRO, 92_000),
-            planner.nextAction(positionMs = 32_000, durationMs = 3_600_000),
-        )
-    }
-
-    @Test
     fun ignoresMarkersThatCouldNotProduceASafeTarget() {
         val planner = planner(
             intro = SkipRange(startSeconds = 50.0, endSeconds = 50.0),

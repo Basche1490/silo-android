@@ -43,7 +43,6 @@ on:
   push:
     branches:
       - main
-      - zidoo-external-player
 
 permissions:
   contents: write

@@ -49,10 +49,10 @@ object TvInterfaceScale {
     }
 
     /** The density, and the screen size in dp it gives, for a [STANDARD_TV_WIDTH_DP]-wide layout. */
-    data class Target(val densityDpi: Int, val widthDp: Int, val heightDp: Int)
+    private data class Target(val densityDpi: Int, val widthDp: Int, val heightDp: Int)
 
     /** The standard density for a screen of [widthPx] by [heightPx] now at [densityDpi]; null when that is already it. */
-    fun standardDensity(widthPx: Int, heightPx: Int, densityDpi: Int): Target? {
+    private fun standardDensity(widthPx: Int, heightPx: Int, densityDpi: Int): Target? {
         val longPx = max(widthPx, heightPx)
         val shortPx = min(widthPx, heightPx)
         if (shortPx <= 0 || densityDpi <= 0) return null

@@ -21,21 +21,19 @@ sealed interface ZidooMonitorOutcome {
 /**
  * Follows one Zidoo playback from launch to the end, the way the ZidooPlexMod
  * add-on does: wait for the player to report a loaded video, then read its
- * status every [pollIntervalMs] until it stops answering.
+ * status every [POLL_INTERVAL_MS] until it stops answering.
  *
  * - Zero positions are not reported. The player can read 0 for a moment after
  *   it starts, and passing that on would overwrite a resume position.
  * - An occasional failed read is normal, so playback only counts as over after
- *   [maxMissedPolls] failures in a row, or when the player reports no video or
+ *   [MAX_MISSED_POLLS] failures in a row, or when the player reports no video or
  *   a stopped state.
  * - Skips only happen while the player is actually playing.
  */
 class ZidooPlaybackMonitor(
     private val api: ZidooPlayerApi,
     private val planner: ZidooSkipPlanner,
-    private val pollIntervalMs: Long = 1_000L,
     private val startupTimeoutMs: Long = 60_000L,
-    private val maxMissedPolls: Int = 3,
     private val pause: suspend (Long) -> Unit = { delay(it) },
 ) {
     /**
@@ -81,18 +79,18 @@ class ZidooPlaybackMonitor(
     private suspend fun awaitPlayerStart(giveUp: () -> Boolean, keepWaiting: () -> Boolean): ZidooPlayStatus? {
         var waitedMs = 0L
         while (true) {
-            pause(pollIntervalMs)
-            waitedMs += pollIntervalMs
+            pause(POLL_INTERVAL_MS)
+            waitedMs += POLL_INTERVAL_MS
             val reading = api.status()
             if (reading != null && reading.durationMs > 0L) return reading
             if (giveUp() || waitedMs >= startupTimeoutMs && !keepWaiting()) return null
         }
     }
 
-    /** The next answer from the player; null after [maxMissedPolls] failed reads in a row. */
+    /** The next answer from the player; null after [MAX_MISSED_POLLS] failed reads in a row. */
     private suspend fun nextReading(): ZidooPlayStatus? {
-        repeat(maxMissedPolls) {
-            pause(pollIntervalMs)
+        repeat(MAX_MISSED_POLLS) {
+            pause(POLL_INTERVAL_MS)
             api.status()?.let { return it }
         }
         return null
@@ -101,6 +99,11 @@ class ZidooPlaybackMonitor(
     private suspend fun skipIfDue(status: ZidooPlayStatus) {
         val action = planner.nextAction(status.positionMs, status.durationMs) ?: return
         if (!api.seekTo(action.targetMs)) planner.release(action.kind)
+    }
+
+    private companion object {
+        const val POLL_INTERVAL_MS = 1_000L
+        const val MAX_MISSED_POLLS = 3
     }
 }
 
