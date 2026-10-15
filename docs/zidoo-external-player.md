@@ -24,6 +24,7 @@ Silo still tracks the playback:
   With Settings → Playback → Auto-Play Next Episode on, it opens in the Zidoo
   player after a countdown, 10 seconds unless you change **Settings →
   External Player → Up Next Countdown** (right away, or 3 to 30 seconds).
+  A ring beside the episode counts the seconds down, as in Silo's own player.
   **Play Now** starts it straight away and **Back** returns to the show. The Still Watching Prompt applies as in
   Silo's own player: after that many episodes in a row, Silo waits for Play
   Now.

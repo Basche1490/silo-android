@@ -1,6 +1,7 @@
 package org.siloserver.silo.tv.ui.screens.player.external
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,11 +18,16 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
@@ -29,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import kotlinx.coroutines.delay
 import org.koin.compose.koinInject
@@ -192,9 +199,15 @@ private fun UpNextCard(
     // Threshold 0 is off. Both settings are read before anything counts down.
     val stillWatching = threshold != null && threshold > 0 && autoAdvanceCount >= threshold
     val countdownOn = autoPlay == true && threshold != null && !stillWatching
+    // The length chosen in Settings, fixed for this card once it shows.
+    val total = remember(next.contentId) { countdownSeconds }
+    var remaining by remember(next.contentId) { mutableIntStateOf(total) }
     LaunchedEffect(next.contentId, countdownOn) {
         if (!countdownOn) return@LaunchedEffect
-        delay(countdownSeconds * 1_000L)
+        while (remaining > 0) {
+            delay(1_000)
+            remaining -= 1
+        }
         onPlay(true)
     }
     TvDialogCard(
@@ -206,7 +219,36 @@ private fun UpNextCard(
             TvDialogAction("Back", onBack),
         ),
         initialFocusIndex = 0,
+        content = if (countdownOn && total > 0) {
+            { CountdownRing(seconds = remaining, totalSeconds = total) }
+        } else {
+            null
+        },
     )
+}
+
+/**
+ * The countdown as Silo's own Up Next shows it (TvPlayerScreen's
+ * TvCountdownRing): a ring that drains as the seconds run out, with the
+ * seconds left in the middle.
+ */
+@Composable
+private fun CountdownRing(seconds: Int, totalSeconds: Int) {
+    val progress = (seconds.toFloat() / totalSeconds.toFloat()).coerceIn(0f, 1f)
+    Box(modifier = Modifier.size(58.dp), contentAlignment = Alignment.Center) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val stroke = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round)
+            drawCircle(color = Color.White.copy(alpha = 0.12f), style = stroke)
+            drawArc(
+                color = Color.White,
+                startAngle = -90f,
+                sweepAngle = 360f * progress,
+                useCenter = false,
+                style = stroke,
+            )
+        }
+        Text(text = "$seconds", color = Color.White, style = MaterialTheme.typography.titleMedium)
+    }
 }
 
 @Composable
