@@ -35,6 +35,7 @@ class ZidooPlaybackMonitorTest {
         api: ZidooPlayerApi,
         settings: ZidooSkipSettings = ZidooSkipSettings(skipIntro = true, skipCredits = true),
         startupTimeoutMs: Long = 5_000L,
+        startPositionMs: Long = 0L,
     ) = ZidooPlaybackMonitor(
         api = api,
         planner = ZidooSkipPlanner(
@@ -42,6 +43,7 @@ class ZidooPlaybackMonitorTest {
             credits = SkipRange(3_300.0, 3_600.0),
             settings = settings,
         ),
+        startPositionMs = startPositionMs,
         startupTimeoutMs = startupTimeoutMs,
         pause = {},
     )
@@ -64,6 +66,34 @@ class ZidooPlaybackMonitorTest {
             samples,
         )
         assertEquals(ZidooMonitorOutcome.Finished(6_500, duration), outcome)
+    }
+
+    @Test
+    fun aResumeIgnoresReadingsFromBeforeThePlayerReachedTheResumePoint() = runBlocking {
+        // Resuming at 20:00, the player first reports a moment inside the intro.
+        val api = ScriptedPlayer(playing(45_000), playing(1_200_500), playing(1_201_500), null, null, null)
+        val samples = mutableListOf<ZidooSample>()
+
+        val outcome = monitor(api, startPositionMs = 1_200_000).run(onStarted = {}, onSample = { samples += it })
+
+        assertTrue(api.seeks.isEmpty(), "the intro the viewer is past was not skipped: ${api.seeks}")
+        assertEquals(listOf(1_200_500L, 1_201_500L), samples.map { it.positionMs })
+        assertEquals(ZidooMonitorOutcome.Finished(1_201_500, duration), outcome)
+    }
+
+    @Test
+    fun aPlayerThatIgnoredTheResumePointIsSentThere() = runBlocking {
+        val api = ScriptedPlayer(
+            playing(1_000), playing(2_000), playing(3_000),
+            playing(1_200_100), null, null, null,
+        )
+        val samples = mutableListOf<ZidooSample>()
+
+        val outcome = monitor(api, startPositionMs = 1_200_000).run(onStarted = {}, onSample = { samples += it })
+
+        assertEquals(listOf(1_200_000L), api.seeks)
+        assertEquals(listOf(1_200_100L), samples.map { it.positionMs })
+        assertEquals(ZidooMonitorOutcome.Finished(1_200_100, duration), outcome)
     }
 
     @Test

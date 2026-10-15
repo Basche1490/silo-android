@@ -317,11 +317,12 @@ class ZidooHandoffCoordinator(
 
             val subtitleTracks = version?.subtitleTracks.orEmpty()
             val title = displayTitle(ready)
+            val startPositionMs = (ready.sourceStartPositionSeconds.coerceAtLeast(0.0) * 1000).toLong()
             val intent = plexToZidooIntent(
                 PlexToZidooLaunch.Request(
                     serverFilePath = path,
                     title = title,
-                    startPositionMs = (ready.sourceStartPositionSeconds.coerceAtLeast(0.0) * 1000).toLong(),
+                    startPositionMs = startPositionMs,
                     audioIndex = ZidooTrackMapping.audioIndex(
                         siloAudioOrdinal = ready.playbackPlan?.selectedTracks?.audioIndex ?: ready.audioTrackIndex,
                         audioTrackCount = version?.audioTracks.orEmpty().size,
@@ -357,8 +358,9 @@ class ZidooHandoffCoordinator(
             launched = true
 
             val monitor = ZidooPlaybackMonitor(
-                zidoo,
-                ZidooSkipPlanner(
+                api = zidoo,
+                startPositionMs = startPositionMs,
+                planner = ZidooSkipPlanner(
                     intro = ready.intro?.toSkipRange(),
                     credits = ready.credits?.toSkipRange(),
                     settings = settings.skipSettings(),

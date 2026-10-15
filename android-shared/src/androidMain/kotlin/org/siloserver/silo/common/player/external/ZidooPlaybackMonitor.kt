@@ -29,10 +29,18 @@ sealed interface ZidooMonitorOutcome {
  *   [MAX_MISSED_POLLS] failures in a row, or when the player reports no video or
  *   a stopped state.
  * - Skips only happen while the player is actually playing.
+ * - A playback resuming at [startPositionMs] counts as under way only once the
+ *   player has reached that point. The player can report a moment at the
+ *   start of the file first, and acting on it would skip an intro the viewer
+ *   is past, or save a position from before the resume point. A player still
+ *   short of it after [RESUME_SEEK_EVERY_READINGS] readings is sent there,
+ *   so the resume point holds even if the player ignored it.
  */
 class ZidooPlaybackMonitor(
     private val api: ZidooPlayerApi,
     private val planner: ZidooSkipPlanner,
+    /** Where playback was asked to start, in milliseconds; 0 for the start of the file. */
+    private val startPositionMs: Long = 0L,
     private val startupTimeoutMs: Long = 60_000L,
     private val pause: suspend (Long) -> Unit = { delay(it) },
 ) {
@@ -59,9 +67,23 @@ class ZidooPlaybackMonitor(
 
         var lastPositionMs = 0L
         var durationMs = status.durationMs
+        // A resume point the file has room for; otherwise the start of the file.
+        val resumeAtMs = startPositionMs.takeIf { it > RESUME_TOLERANCE_MS && it < durationMs - RESUME_TOLERANCE_MS } ?: 0L
+        var reachingResumePoint = resumeAtMs > 0L
+        var readingsShortOfResumePoint = 0
         while (status.durationMs > 0L && status.state != ZidooPlayState.STOPPED) {
             durationMs = status.durationMs
-            if (status.positionMs > 0L) {
+            if (reachingResumePoint) {
+                if (status.positionMs >= resumeAtMs - RESUME_TOLERANCE_MS) {
+                    reachingResumePoint = false
+                } else {
+                    readingsShortOfResumePoint++
+                    if (readingsShortOfResumePoint % RESUME_SEEK_EVERY_READINGS == 0) api.seekTo(resumeAtMs)
+                    // The player stays where it is from here on; the viewer may have moved it.
+                    if (readingsShortOfResumePoint >= RESUME_GIVE_UP_READINGS) reachingResumePoint = false
+                }
+            }
+            if (!reachingResumePoint && status.positionMs > 0L) {
                 lastPositionMs = status.positionMs
                 onSample(ZidooSample(lastPositionMs, durationMs, status.state == ZidooPlayState.PAUSED))
                 if (status.state == ZidooPlayState.PLAYING) skipIfDue(status)
@@ -104,6 +126,15 @@ class ZidooPlaybackMonitor(
     private companion object {
         const val POLL_INTERVAL_MS = 1_000L
         const val MAX_MISSED_POLLS = 3
+
+        /** How far before the resume point the player may land and still count as there (it starts on a keyframe). */
+        const val RESUME_TOLERANCE_MS = 10_000L
+
+        /** Readings short of the resume point between each request to go there. */
+        const val RESUME_SEEK_EVERY_READINGS = 3
+
+        /** Readings short of the resume point before the player is left where it is. */
+        const val RESUME_GIVE_UP_READINGS = 15
     }
 }
 

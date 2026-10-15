@@ -8,7 +8,9 @@ unchanged.
 
 Silo still tracks the playback:
 
-- **Resume.** Playback starts at Silo's resume point. Silo saves your position
+- **Resume.** Playback starts at Silo's resume point; if the Zidoo player
+  opens anywhere else, Silo moves it there, and no marker is skipped until it
+  arrives. Silo saves your position
   every 10 seconds while the Zidoo player plays, and once more when it closes,
   so stopping or switching the box off resumes there next time. Past your
   server's watched threshold (90% unless changed), the title counts as
