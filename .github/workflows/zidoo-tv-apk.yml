@@ -13,7 +13,7 @@ name: Zidoo TV APK
 #
 # If upstream changes clash with the fork's edits, the run fails, names the
 # files in its summary, and opens an issue when the fork has issues enabled.
-# docs/zidoo-external-player.md explains how to fix a clash.
+# docs/zidoo-updating.md explains how to fix a clash.
 #
 # The fork's fixed debug key (.github/zidoo-debug.keystore, password "android")
 # signs every build, and the run checks the APK's signer before releasing, so a
@@ -101,7 +101,7 @@ jobs:
             sed 's/^/- `/; s/$/`/' "$RUNNER_TEMP/conflicts.txt"
             echo
             echo "Fix it by syncing the fork and resolving these files; every fork edit to a Silo file is marked [zidoo-fork]."
-            echo "See docs/zidoo-external-player.md, \"When an update clashes\"."
+            echo "See docs/zidoo-updating.md, \"When a run fails\". Never press Discard commits in Sync fork."
           } > "$RUNNER_TEMP/clash.md"
           cat "$RUNNER_TEMP/clash.md" >> "$GITHUB_STEP_SUMMARY"
           title="Zidoo build: upstream Silo changes clash with the fork"

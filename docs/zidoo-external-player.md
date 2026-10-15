@@ -156,19 +156,11 @@ installed app's won't install over it.
 
 ## When an update clashes
 
-If upstream Silo changes lines the fork also changed, the run fails and lists
-the files in its summary (and opens an issue if the fork has issues turned on).
-To fix it, on a computer with git:
-
-    git clone https://github.com/<you>/silo-android && cd silo-android
-    git remote add upstream https://github.com/Silo-Server/silo-android.git
-    git fetch upstream && git merge upstream/main
-    # resolve the listed files, keeping both upstream's change and the [zidoo-fork] lines
-    git commit && git push
-
-Or ask Claude with the fork's name: it can do the merge, run the tests and
-push. The clash is almost always in one of the five Silo files listed below,
-each change marked with `[zidoo-fork]`.
+If upstream Silo changes lines the fork also changed, or code the fork uses,
+the run fails and publishes nothing. [zidoo-updating.md](zidoo-updating.md)
+explains how to fix it, on GitHub's website, with git, or with Claude, and has
+the prompts to paste into a new Claude chat. Never press **Discard commits**
+in **Sync fork**: it deletes the fork's changes.
 
 ## What the fork changes
 
@@ -190,6 +182,7 @@ New files (no clash possible):
 | Screen behind the Zidoo player | `androidTvApp/.../player/external/TvExternalPlayerScreen.kt` |
 | Route switch, settings group, wiring | `androidTvApp/.../player/external/TvExternalPlayerRoute.kt`, `TvExternalPlayerSettingsGroup.kt`, `ExternalPlayerTvModule.kt`, `PlexToZidooAvailability.kt` |
 | Build and release workflow, debug key | `.github/workflows/zidoo-tv-apk.yml`, `.github/zidoo-debug.keystore` |
+| How to bring in Silo updates | `docs/zidoo-updating.md` |
 
 Edits to Silo's own files, each marked `[zidoo-fork]` (`git grep "\[zidoo-fork\]"`):
 
