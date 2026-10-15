@@ -82,8 +82,10 @@ class ZidooPlaybackMonitorTest {
     }
 
     @Test
-    fun aPlayerThatIgnoredTheResumePointIsSentThere() = runBlocking {
+    fun aPlayerThatIgnoredTheResumePointIsSentThereOnceItIsPlaying() = runBlocking {
+        // A large file: the player loads (paused at the start) before it plays from 0:00.
         val api = ScriptedPlayer(
+            paused(1_000), paused(1_000), paused(1_000), paused(1_000),
             playing(1_000), playing(2_000), playing(3_000),
             playing(1_200_100), null, null, null,
         )
@@ -91,9 +93,35 @@ class ZidooPlaybackMonitorTest {
 
         val outcome = monitor(api, startPositionMs = 1_200_000).run(onStarted = {}, onSample = { samples += it })
 
-        assertEquals(listOf(1_200_000L), api.seeks)
+        assertEquals(listOf(1_200_000L), api.seeks, "one jump, once it was playing")
         assertEquals(listOf(1_200_100L), samples.map { it.positionMs })
         assertEquals(ZidooMonitorOutcome.Finished(1_200_100, duration), outcome)
+    }
+
+    @Test
+    fun aPlayerThatReportsTheResumePointAndThenStartsOverIsSentBack() = runBlocking {
+        val api = ScriptedPlayer(
+            playing(1_200_000), playing(500), playing(1_500), playing(2_500),
+            playing(1_200_200), null, null, null,
+        )
+        val samples = mutableListOf<ZidooSample>()
+
+        val outcome = monitor(api, startPositionMs = 1_200_000).run(onStarted = {}, onSample = { samples += it })
+
+        assertEquals(listOf(1_200_000L), api.seeks)
+        assertEquals(listOf(1_200_000L, 1_200_200L), samples.map { it.positionMs })
+        assertEquals(ZidooMonitorOutcome.Finished(1_200_200, duration), outcome)
+    }
+
+    @Test
+    fun aViewerWhoRewindsAfterTheResumeIsLeftThere() = runBlocking {
+        val api = ScriptedPlayer(playing(1_200_000), playing(600_000), playing(601_000), playing(602_000), null, null, null)
+        val samples = mutableListOf<ZidooSample>()
+
+        monitor(api, startPositionMs = 1_200_000).run(onStarted = {}, onSample = { samples += it })
+
+        assertTrue(api.seeks.isEmpty(), "${api.seeks}")
+        assertEquals(listOf(1_200_000L, 600_000L, 601_000L, 602_000L), samples.map { it.positionMs })
     }
 
     @Test

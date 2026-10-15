@@ -29,12 +29,13 @@ sealed interface ZidooMonitorOutcome {
  *   [MAX_MISSED_POLLS] failures in a row, or when the player reports no video or
  *   a stopped state.
  * - Skips only happen while the player is actually playing.
- * - A playback resuming at [startPositionMs] counts as under way only once the
- *   player has reached that point. The player can report a moment at the
- *   start of the file first, and acting on it would skip an intro the viewer
- *   is past, or save a position from before the resume point. A player still
- *   short of it after [RESUME_SEEK_EVERY_READINGS] readings is sent there,
- *   so the resume point holds even if the player ignored it.
+ * - A playback resuming at [startPositionMs] is held to that point while it
+ *   gets going ([ResumeGuard]). The Zidoo player does not always start there:
+ *   with a large file it can start from the beginning instead, sometimes after
+ *   first reporting the resume point. Readings short of the resume point are
+ *   not reported or used for skips, which would skip an intro the viewer is
+ *   past or save a position from before the resume point, and a player
+ *   playing short of it is sent there.
  */
 class ZidooPlaybackMonitor(
     private val api: ZidooPlayerApi,
@@ -67,23 +68,12 @@ class ZidooPlaybackMonitor(
 
         var lastPositionMs = 0L
         var durationMs = status.durationMs
-        // A resume point the file has room for; otherwise the start of the file.
-        val resumeAtMs = startPositionMs.takeIf { it > RESUME_TOLERANCE_MS && it < durationMs - RESUME_TOLERANCE_MS } ?: 0L
-        var reachingResumePoint = resumeAtMs > 0L
-        var readingsShortOfResumePoint = 0
+        val resume = ResumeGuard(startPositionMs, durationMs)
         while (status.durationMs > 0L && status.state != ZidooPlayState.STOPPED) {
             durationMs = status.durationMs
-            if (reachingResumePoint) {
-                if (status.positionMs >= resumeAtMs - RESUME_TOLERANCE_MS) {
-                    reachingResumePoint = false
-                } else {
-                    readingsShortOfResumePoint++
-                    if (readingsShortOfResumePoint % RESUME_SEEK_EVERY_READINGS == 0) api.seekTo(resumeAtMs)
-                    // The player stays where it is from here on; the viewer may have moved it.
-                    if (readingsShortOfResumePoint >= RESUME_GIVE_UP_READINGS) reachingResumePoint = false
-                }
-            }
-            if (!reachingResumePoint && status.positionMs > 0L) {
+            val shortOfResumePoint = resume.isShort(status)
+            if (resume.shouldSeek()) api.seekTo(resume.resumeAtMs)
+            if (!shortOfResumePoint && status.positionMs > 0L) {
                 lastPositionMs = status.positionMs
                 onSample(ZidooSample(lastPositionMs, durationMs, status.state == ZidooPlayState.PAUSED))
                 if (status.state == ZidooPlayState.PLAYING) skipIfDue(status)
@@ -126,15 +116,76 @@ class ZidooPlaybackMonitor(
     private companion object {
         const val POLL_INTERVAL_MS = 1_000L
         const val MAX_MISSED_POLLS = 3
+    }
+}
 
+/**
+ * Holds a resuming playback to its resume point for its first
+ * [WATCH_PLAYING_READINGS] readings of actual playback.
+ *
+ * A reading is short of the resume point when the player has not reached it
+ * yet, or, once it has, when it is back within [RESTART_WINDOW_MS] of the
+ * start: a player that reports the resume point and then starts the file over
+ * looks like that. A viewer rewinding to anywhere later is left alone. Every
+ * [SEEK_EVERY_PLAYING_READINGS]th reading that is playing and short asks the
+ * player to go to the resume point, up to [MAX_SEEKS] times. Readings while the
+ * player loads or is paused never ask: a large file can take many seconds to
+ * start, and a jump asked for meanwhile is ignored.
+ */
+internal class ResumeGuard(startPositionMs: Long, durationMs: Long) {
+    /** The resume point, or 0 when the playback starts from the beginning or the file has no room for it. */
+    val resumeAtMs: Long =
+        startPositionMs.takeIf { it > TOLERANCE_MS && (durationMs <= 0L || it < durationMs - TOLERANCE_MS) } ?: 0L
+
+    private val detectsRestart = resumeAtMs - TOLERANCE_MS > 2 * RESTART_WINDOW_MS
+    private var playingReadingsLeft = if (resumeAtMs > 0L) WATCH_PLAYING_READINGS else 0
+    private var reached = false
+    private var playingShortReadings = 0
+    private var seeks = 0
+    private var seekDue = false
+
+    /** Whether [status] is short of the resume point, so neither reported nor used for skips. */
+    fun isShort(status: ZidooPlayStatus): Boolean {
+        seekDue = false
+        if (playingReadingsLeft <= 0) return false
+        val playing = status.state == ZidooPlayState.PLAYING
+        if (playing) playingReadingsLeft--
+        val position = status.positionMs
+        val short = if (!reached) {
+            position < resumeAtMs - TOLERANCE_MS
+        } else {
+            detectsRestart && position < RESTART_WINDOW_MS
+        }
+        if (!short) {
+            if (position >= resumeAtMs - TOLERANCE_MS) reached = true
+            playingShortReadings = 0
+        } else if (playing) {
+            playingShortReadings++
+            if (playingShortReadings % SEEK_EVERY_PLAYING_READINGS == 0 && seeks < MAX_SEEKS) {
+                seeks++
+                seekDue = true
+            }
+        }
+        return short
+    }
+
+    /** True right after the [isShort] reading that calls for a jump to [resumeAtMs]. */
+    fun shouldSeek(): Boolean = seekDue
+
+    companion object {
         /** How far before the resume point the player may land and still count as there (it starts on a keyframe). */
-        const val RESUME_TOLERANCE_MS = 10_000L
+        const val TOLERANCE_MS = 10_000L
 
-        /** Readings short of the resume point between each request to go there. */
-        const val RESUME_SEEK_EVERY_READINGS = 3
+        /** How close to the start a player that had reached the resume point counts as having started over. */
+        const val RESTART_WINDOW_MS = 60_000L
 
-        /** Readings short of the resume point before the player is left where it is. */
-        const val RESUME_GIVE_UP_READINGS = 15
+        /** Readings of actual playback the resume point is held for. */
+        const val WATCH_PLAYING_READINGS = 30
+
+        /** Playing readings short of the resume point between each request to go there. */
+        const val SEEK_EVERY_PLAYING_READINGS = 3
+
+        const val MAX_SEEKS = 5
     }
 }
 
