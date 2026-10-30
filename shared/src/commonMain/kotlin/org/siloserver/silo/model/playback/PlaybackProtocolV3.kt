@@ -4,6 +4,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerializationException
+import kotlinx.serialization.Transient
 import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.descriptors.nullable
 import kotlinx.serialization.encoding.Decoder
@@ -22,6 +23,60 @@ const val SEEK_REANCHOR_V3_FEATURE = "seek_reanchor_v1"
 const val DIRECT_STREAM_RESUME_V1_FEATURE = "direct_stream_resume_v1"
 const val EMBEDDED_SUBTITLES_V1_FEATURE = "embedded_subtitles_v1"
 const val NATIVE_HLS_PLAYBACK_V1_FEATURE = "native_hls_playback_v1"
+
+/**
+ * A `server_transcode_hls` plan may carry its embedded text subtitle as a
+ * WebVTT `SUBTITLES` rendition of the plan's own HLS stream
+ * ([PlaybackSubtitleDecisionV3.hlsRendition]) instead of a sidecar artifact.
+ * `/api/v2` only, and attempt-sticky on the server.
+ */
+const val HLS_SUBTITLE_RENDITIONS_V1_FEATURE = "hls_subtitle_renditions_v1"
+
+/**
+ * The decision's plan reports [PlaybackPlanV3.activeQuality], so an absent
+ * value means the plan delivers no menu entry. Without it, an absent value
+ * says nothing and the client infers the entry. `/api/v2` only.
+ */
+const val PLAN_ACTIVE_QUALITY_V1_FEATURE = "plan_active_quality_v1"
+
+/**
+ * The server keeps learned bandwidth limits and accepts
+ * `bandwidth_estimate_source` and `learned_limit` on start and replan. The
+ * server advertises it in the `/api/v2` capability `features`; only then does
+ * the client echo it in `client_features` and send those fields, because the
+ * server rejects unknown fields. Spec: the server repo's
+ * `docs/design/2026-10-17-buffering-quality.md`, *Wire contract*.
+ */
+const val BUFFERING_QUALITY_V1_FEATURE = "buffering_quality_v1"
+
+/** The server accepts the `plan_summary` route event. */
+const val PLAYBACK_PLAN_SUMMARY_V1_FEATURE = "playback_plan_summary_v1"
+
+/** The server serves a bandwidth probe on the media path and takes probe results. */
+const val CONNECTION_SPEED_V1_FEATURE = "connection_speed_v1"
+
+/** `bandwidth_estimate_source` values. Valid only alongside `bandwidth_estimate_kbps`. */
+const val BANDWIDTH_ESTIMATE_SOURCE_PROBE = "probe"
+const val BANDWIDTH_ESTIMATE_SOURCE_OBSERVED_REBUFFER = "observed_rebuffer"
+
+/** `learned_limit` values. Absent applies the stored limit. */
+const val LEARNED_LIMIT_IGNORE = "ignore"
+const val LEARNED_LIMIT_CLEAR = "clear"
+
+/** The degradation warning Auto returns when nothing lower exists. */
+const val QUALITY_REDUCTION_UNAVAILABLE_WARNING = "quality_reduction_unavailable"
+
+/**
+ * Failure classifications for a server subtitle decision the player selects
+ * from its own media and could not mount. Either one asks `failure_recovery`
+ * for the sidecar plan; neither may tear down healthy video.
+ */
+const val SUBTITLE_EMBEDDED_FAILED_CLASSIFICATION = "subtitle_embedded_failed"
+const val SUBTITLE_HLS_RENDITION_FAILED_CLASSIFICATION = "subtitle_hls_rendition_failed"
+val SUBTITLE_SELECTION_FAILURE_CLASSIFICATIONS = setOf(
+    SUBTITLE_EMBEDDED_FAILED_CLASSIFICATION,
+    SUBTITLE_HLS_RENDITION_FAILED_CLASSIFICATION,
+)
 
 /**
  * Delivery-scoped proof that the original-file player maps a server-selected
@@ -77,7 +132,12 @@ const val QUALITY_CHANGE_V3_OPERATION = "quality_change"
  */
 val INTENT_V3_OPERATIONS = setOf(TRACK_CHANGE_V3_OPERATION, QUALITY_CHANGE_V3_OPERATION)
 
-/** The quality rung that asks the server to preserve the source as-is. */
+/**
+ * The label of the source entry older servers list, and the audiobook player's
+ * quality preference. Video requests send Auto instead
+ * ([videoQualityPreference]): Auto plays the source whenever the device and
+ * connection can.
+ */
 const val QUALITY_ORIGINAL_V3 = "original"
 
 const val CLIENT_DV7_TO_DV81 = "client_dv7_to_dv81"
@@ -114,6 +174,12 @@ fun playbackClientFeaturesV3(context: ClientPlaybackContext): List<String> = bui
     }
     if (!context.output.audioPassthrough?.entries.isNullOrEmpty()) {
         add(LAYOUT_AWARE_PASSTHROUGH_FEATURE)
+    }
+    // Only Media3's own HLS pipeline selects a rendition from the multivariant
+    // playlist. A Cast receiver's HLS delivery does not carry that marker and
+    // keeps its sidecars.
+    if (NATIVE_HLS_PLAYBACK_V1_FEATURE in context.deliveries[DELIVERY_CLASS_HLS]?.features.orEmpty()) {
+        add(HLS_SUBTITLE_RENDITIONS_V1_FEATURE)
     }
 }
 
@@ -223,12 +289,34 @@ data class PlaybackPlanV3(
      * from the source resolution itself.
      */
     @SerialName("available_qualities") val availableQualities: List<PlaybackAvailableQualityV3> = emptyList(),
+    /**
+     * The [availableQualities] label this plan delivers, or null when it
+     * delivers none (the source plays unchanged, or an encode falls between
+     * two entries). Meaningful only when [activeQualityReported].
+     */
+    @SerialName("active_quality") val activeQuality: String? = null,
+    /**
+     * Whether the decision carrying this plan listed
+     * [PLAN_ACTIVE_QUALITY_V1_FEATURE]. Not on the wire: [validateForMedia3]
+     * sets it from the response's `server_features`.
+     */
+    @Transient val activeQualityReported: Boolean = false,
     @SerialName("degradation_warnings") val degradationWarnings: List<PlaybackDegradationWarning> = emptyList(),
     @SerialName("decision_reason") val decisionReason: String,
     @SerialName("requested_media_file_id") val requestedMediaFileId: Int? = null,
     @SerialName("effective_media_file_id") val effectiveMediaFileId: Int? = null,
     val source: PlaybackSourceDescriptorV3 = PlaybackSourceDescriptorV3(),
     @SerialName("subtitle_fidelity_policy") val subtitleFidelityPolicy: String? = null,
+    /** Present only when a learned limit lowered this plan. */
+    @SerialName("bandwidth_limit") val bandwidthLimit: PlaybackBandwidthLimitV3? = null,
+)
+
+/** A learned bandwidth limit that lowered Auto for this plan. */
+@Serializable
+data class PlaybackBandwidthLimitV3(
+    val kbps: Int,
+    val source: String = BANDWIDTH_ESTIMATE_SOURCE_OBSERVED_REBUFFER,
+    @SerialName("expires_at") val expiresAt: String? = null,
 )
 
 /** One selectable rung of [PlaybackPlanV3.availableQualities]. */
@@ -267,6 +355,8 @@ data class PlaybackSourceDescriptorV3(
     @SerialName("color_range") val colorRange: String? = null,
     val width: Int = 0,
     val height: Int = 0,
+    /** The source file's bitrate; 0 when the server did not report it. */
+    @SerialName("bitrate_kbps") val bitrateKbps: Int = 0,
     @SerialName("dynamic_range") val dynamicRange: String? = null,
     @SerialName("audio_codec") val audioCodec: String? = null,
     @SerialName("letterbox_top_fraction") val letterboxTopFraction: Double = 0.0,
@@ -346,12 +436,26 @@ data class PlaybackEmbeddedSubtitleV3(
     @SerialName("container_track_id") val containerTrackId: String? = null,
 )
 
+/**
+ * The selected track as a `SUBTITLES` rendition of the plan's HLS stream: the
+ * stream URL is then a multivariant playlist with one `EXT-X-MEDIA` in
+ * [groupId] named [name]. The player selects it there and fetches no sidecar.
+ */
+@Serializable
+data class PlaybackSubtitleHlsRenditionV3(
+    @SerialName("group_id") val groupId: String,
+    val name: String,
+    val format: String,
+    @SerialName("mime_type") val mimeType: String,
+)
+
 @Serializable
 data class PlaybackSubtitleDecisionV3(
     val mode: PlaybackSubtitleModeV3 = PlaybackSubtitleModeV3.OFF,
     @SerialName("track_id") val trackId: String? = null,
     val artifact: PlaybackSubtitleArtifactV3? = null,
     val embedded: PlaybackEmbeddedSubtitleV3? = null,
+    @SerialName("hls_rendition") val hlsRendition: PlaybackSubtitleHlsRenditionV3? = null,
     /**
      * The complete, gap-free combined-ordinal subtitle list for the effective
      * source. Authoritative: select a track by echoing an entry's
@@ -429,9 +533,33 @@ data class PlaybackStartRequestV3(
     @SerialName("audio_track_index") val audioTrackIndex: Int? = null,
     @SerialName("subtitle_track_id") val subtitleTrackId: String? = null,
     @SerialName("subtitle_track_index") val subtitleTrackIndex: Int? = null,
+    /**
+     * Always false, here and on replans. The server ignores it; older servers
+     * require it on `/api/v2` and drop Auto to their metered limit when it is
+     * true. The phone applies its own cellular quality pair instead.
+     */
     val metered: Boolean = false,
-    @SerialName("bandwidth_estimate_kbps") val bandwidthEstimateKbps: Int? = null,
     @SerialName("bandwidth_cap_kbps") val bandwidthCapKbps: Int? = null,
+    /**
+     * The highest current reading for this server and network, a speed test
+     * or a playback sample: a hint Auto uses to rule out a source the link
+     * clearly cannot carry. Absent without one, and on metered or cellular
+     * networks. Media3's bandwidth meter is never sent: it times
+     * loads that stall on a full buffer or wait on a live transcode, so its
+     * figure can understate the link and make Auto convert.
+     */
+    @SerialName("bandwidth_estimate_kbps") val bandwidthEstimateKbps: Int? = null,
+    /**
+     * [BANDWIDTH_ESTIMATE_SOURCE_PROBE] alongside [bandwidthEstimateKbps];
+     * needs [BUFFERING_QUALITY_V1_FEATURE].
+     */
+    @SerialName("bandwidth_estimate_source") val bandwidthEstimateSource: String? = null,
+    /**
+     * `ignore` in `never` mode, so a limit learned by another profile on this
+     * device does not reach this one, and on every Cast request. Sent only to
+     * a server advertising [BUFFERING_QUALITY_V1_FEATURE].
+     */
+    @SerialName("learned_limit") val learnedLimit: String? = null,
     @SerialName("client_capabilities") val capabilities: ClientCodecCapabilities,
     @SerialName("client_playback_context") val clientPlaybackContext: ClientPlaybackContext,
     /**
@@ -472,9 +600,27 @@ data class PlaybackReplanRequestV3(
     @SerialName("attempt_count") val attemptCount: Int,
     @SerialName("quality_preference") val qualityPreference: String = "auto",
     @SerialName("position_seconds") val positionSeconds: Double,
+    /** Always false; see [PlaybackStartRequestV3.metered]. */
     val metered: Boolean = false,
-    @SerialName("bandwidth_estimate_kbps") val bandwidthEstimateKbps: Int? = null,
     @SerialName("bandwidth_cap_kbps") val bandwidthCapKbps: Int? = null,
+    /**
+     * The buffering-quality step-down estimate: on the `quality_change` replan
+     * that lowers Auto after repeated rebuffering, then without a source on
+     * later Auto replans the client sends for its own reasons. Media3's
+     * bandwidth meter is never sent.
+     */
+    @SerialName("bandwidth_estimate_kbps") val bandwidthEstimateKbps: Int? = null,
+    /** Valid only alongside [bandwidthEstimateKbps]; needs [BUFFERING_QUALITY_V1_FEATURE]. */
+    @SerialName("bandwidth_estimate_source") val bandwidthEstimateSource: String? = null,
+    /**
+     * The playing plan's throughput so far, measured as `plan_summary`'s
+     * `throughput_kbps`. Valid only on a lowering, with
+     * [BANDWIDTH_ESTIMATE_SOURCE_OBSERVED_REBUFFER]; the server plans with the
+     * lower of this and [bandwidthEstimateKbps]. Needs [BUFFERING_QUALITY_V1_FEATURE].
+     */
+    @SerialName("observed_throughput_kbps") val observedThroughputKbps: Int? = null,
+    /** `ignore` or `clear`; needs [BUFFERING_QUALITY_V1_FEATURE]. */
+    @SerialName("learned_limit") val learnedLimit: String? = null,
     @SerialName("selected_tracks") val selectedTracks: SelectedPlaybackTracksV3,
     /**
      * Absent for intent operations ([INTENT_V3_OPERATIONS]), which describe a
@@ -563,6 +709,7 @@ fun PlaybackDecisionResponseV3.validateForMedia3(): PlaybackV3Validation {
         )
     }
     val plan = playbackPlan
+        ?.copy(activeQualityReported = PLAN_ACTIVE_QUALITY_V1_FEATURE in serverFeatures)
         ?: return PlaybackV3Validation.Terminal("invalid_playback_plan", "The server returned no executable playback plan.", false)
     val resolvedSessionId = plan.sessionId ?: sessionId
         ?: return PlaybackV3Validation.Terminal("invalid_playback_plan", "The server returned no playback session identity.", false)
@@ -609,7 +756,15 @@ fun PlaybackDecisionResponseV3.validateForMedia3(): PlaybackV3Validation {
             selectedSubtitle?.source != "embedded" ||
             !isNativeEmbeddedSubtitlePair(plan.source.container, selectedSubtitle.codec) ||
             plan.subtitle.trackId != plan.selectedTracks.subtitle?.id
-        ) return PlaybackV3Validation.ReplanRequired("subtitle_embedded_failed", plan, resolvedSessionId)
+        ) return PlaybackV3Validation.ReplanRequired(SUBTITLE_EMBEDDED_FAILED_CLASSIFICATION, plan, resolvedSessionId)
+    }
+    plan.subtitle.hlsRendition?.let { rendition ->
+        if (plan.delivery != PlaybackDelivery.SERVER_TRANSCODE_HLS || plan.stream.protocol != PlaybackStreamProtocol.HLS ||
+            (plan.subtitle.mode != PlaybackSubtitleModeV3.RENDER && plan.subtitle.mode != PlaybackSubtitleModeV3.CONVERT) ||
+            plan.subtitle.artifact != null || plan.subtitle.embedded != null ||
+            rendition.groupId.isBlank() || rendition.name.isBlank() ||
+            selectedSubtitle == null || plan.subtitle.trackId != plan.selectedTracks.subtitle?.id
+        ) return PlaybackV3Validation.ReplanRequired(SUBTITLE_HLS_RENDITION_FAILED_CLASSIFICATION, plan, resolvedSessionId)
     }
     if (plan.stream.url.isBlank()) {
         return PlaybackV3Validation.Terminal("invalid_playback_plan", "The server returned an empty stream URL.", false)
@@ -699,7 +854,7 @@ private fun PlaybackPlanV3.hasValidSubtitleInventory(): Boolean {
         return false
     }
     val selected = selectedTracks.subtitle
-    if (subtitle.artifact != null && selected == null) return false
+    if ((subtitle.artifact != null || subtitle.hlsRendition != null) && selected == null) return false
     if (selected == null) return true
     return subtitle.inventory.any {
         it.trackId == selected.id &&

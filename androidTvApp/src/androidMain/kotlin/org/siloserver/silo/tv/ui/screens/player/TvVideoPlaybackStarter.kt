@@ -1,5 +1,7 @@
 package org.siloserver.silo.tv.ui.screens.player
 
+import org.siloserver.silo.common.settings.reconcileStart
+import org.siloserver.silo.common.settings.audioResetToAutoPending
 import android.util.Log
 import androidx.media3.common.util.UnstableApi
 import org.siloserver.silo.common.network.ServerReachabilityMonitor
@@ -36,9 +38,9 @@ import org.siloserver.silo.model.playback.isExplicitStartOver
 import org.siloserver.silo.playback.firstPlaybackPart
 import org.siloserver.silo.model.playback.resolvePlaybackStartRequestPosition
 import org.siloserver.silo.model.playback.resolvePlaybackStartPosition
+import org.siloserver.silo.model.playback.videoQualityPreference
 import org.siloserver.silo.network.ApiResult
 import org.siloserver.silo.playback.orNullIfBlank
-import org.siloserver.silo.playback.resolveAudioTrackOrdinal
 import org.siloserver.silo.playback.selectPlaybackVersion
 import org.siloserver.silo.repository.CatalogRepository
 import org.siloserver.silo.repository.ProfileRepository
@@ -61,6 +63,8 @@ class TvVideoPlaybackStarter(
     private val sessionLifecycle: PlaybackSessionLifecycle,
     private val reachabilityMonitor: ServerReachabilityMonitor,
     private val userItemStatePort: UserItemStatePort,
+    /** Lays a series subtitle choice that has not landed yet over the server's answer. */
+    private val seriesTrackChoiceWriter: org.siloserver.silo.common.settings.SeriesTrackChoiceWriter? = null,
 ) : VideoPlaybackStarter {
 
     override suspend fun start(request: VideoPlaybackStartRequest): VideoPlaybackStartResult {
@@ -81,8 +85,21 @@ class TvVideoPlaybackStarter(
         var unpublishedSessionId: String? = null
         var lifecycleAdopted = false
         return try {
+            var audioResetToAuto = false
+            val landedBefore = seriesTrackChoiceWriter?.landedWrites ?: 0L
             val watchDetail = when (val r = catalogRepository.getWatchDetail(request.contentId, expectedMetadataOwner, request.libraryId)) {
-                is ApiResult.Success -> r.data
+                is ApiResult.Success -> {
+                    // An Auto set here and not landed: checked before and after
+                    // the flush, which can land it after its overlay is taken.
+                    val key = org.siloserver.silo.model.playback.seriesTrackChoiceKey(r.data.seriesId, r.data.contentId)
+                    suspend fun resetPending() = key?.let { seriesTrackChoiceWriter?.audioResetToAutoPending(it) } == true
+                    audioResetToAuto = resetPending()
+                    val reconciled = seriesTrackChoiceWriter?.reconcileStart(landedBefore, r.data) {
+                        (catalogRepository.getWatchDetail(request.contentId, expectedMetadataOwner, request.libraryId) as? ApiResult.Success)?.data
+                    } ?: r.data
+                    audioResetToAuto = audioResetToAuto || resetPending()
+                    reconciled
+                }
                 is ApiResult.Error -> return failure(
                     request.contentId,
                     "Failed to load content: ${r.message}",
@@ -104,9 +121,15 @@ class TvVideoPlaybackStarter(
             }
 
             val serverUrl = playbackSessionManager.getServerUrl()
-            val preferredQuality = request.preferredQualityOverride
-                ?: playerSettingsStore.preferredQualityFlow.first()
-            val playbackQualityIntent = request.playbackQualityIntent ?: preferredQuality
+            // Never "original" for video: older servers read it as never convert.
+            val preferredQuality = videoQualityPreference(
+                request.preferredQualityOverride ?: playerSettingsStore.preferredQualityFlow.first(),
+            )
+            val playbackQualityIntent = videoQualityPreference(request.playbackQualityIntent) ?: preferredQuality
+            // What a renewal may carry over: a quality picked in the player or
+            // named by the route, never one that came from the saved settings.
+            val carriedQuality = videoQualityPreference(request.playbackQualityIntent)
+                ?: videoQualityPreference(request.preferredQualityOverride)
             val room = request.room
             if (room != null && watchDetail.versions.none { it.fileId == room.fileId }) {
                 return failure(
@@ -115,13 +138,7 @@ class TvVideoPlaybackStarter(
                     diagnosticsCode = PlaybackDiagnosticsCode.NO_VERSIONS,
                 )
             }
-            // Room starts keep the file through every replan; renewals keep
-            // whatever the original start chose.
-            val allowAlternateVersions = if (room != null) {
-                false
-            } else {
-                request.recoveryStartParams?.allowAlternateVersions
-            }
+            val allowAlternateVersions = request.allowAlternateVersions()
             val resolvedEpisodeSelection = resolveTvPlaybackStartSelection(
                 // A room plays exactly its file; never a preferred or remembered one.
                 preferredFileId = room?.fileId ?: request.preferredFileId,
@@ -186,7 +203,8 @@ class TvVideoPlaybackStarter(
                 settingsLanguage = preferredAudioLanguage,
                 profileLanguage = activeProfile?.language,
             )
-            // Explicit, carried, and durable choices win. Otherwise resolve the
+            // Explicit and carried choices win, then the server's effective
+            // track (the profile's series choice). Otherwise resolve the
             // automatic language + quality policy against the detected device
             // capabilities before asking the server for a plan.
             val startAudioTrackIndex = resolveTvInitialAudioTrackIndex(
@@ -197,6 +215,8 @@ class TvVideoPlaybackStarter(
                 durableAudioFingerprint = durableAudioFingerprint,
                 preferredAudioLanguage = effectivePreferredAudioLanguage,
                 capabilities = capabilities,
+                serverAudioTrackIndex = version.effectiveAudioTrackIndex,
+                audioResetToAuto = audioResetToAuto,
             )
             // Skip-back-on-resume — see MobileVideoPlaybackStarter for the rationale.
             // Suppressed for Start Over / retry (request flag) and Watch Together
@@ -249,6 +269,8 @@ class TvVideoPlaybackStarter(
                     deferPublication = true,
                     expectedMetadataOwner = expectedMetadataOwner,
                     allowAlternateVersions = allowAlternateVersions,
+                    // Watch Party playback stays on the saved address, admission included.
+                    allowsLocalRoute = request.roomId.isNullOrBlank() && room == null,
                 )
             ) {
                 is ApiResult.Success -> r.data
@@ -339,7 +361,7 @@ class TvVideoPlaybackStarter(
                         } else {
                             request.subtitleTrackIndex
                         },
-                        qualityPreference = playbackQualityIntent,
+                        qualityPreference = carriedQuality,
                         startPosition = sourceStartPos,
                         clientPlaybackContext = readyV3.clientPlaybackContext,
                         allowAlternateVersions = allowAlternateVersions,
@@ -412,6 +434,7 @@ class TvVideoPlaybackStarter(
                 showForcedSubtitles = watchDetail.effectiveShowForcedSubtitles
                     ?: activeProfile?.showForcedSubtitles
                     ?: true,
+                preferredSubtitleTrackSignature = watchDetail.effectiveSubtitleTrackSignature,
                 intro = effectiveVersion?.intro,
                 credits = effectiveVersion?.credits,
                 recap = effectiveVersion?.recap,
@@ -488,16 +511,23 @@ internal fun resolveTvInitialAudioTrackIndex(
     durableAudioFingerprint: String?,
     preferredAudioLanguage: String?,
     capabilities: ClientCodecCapabilities,
+    serverAudioTrackIndex: Int? = null,
+    audioResetToAuto: Boolean = false,
 ): Int? {
-    requestedAudioIndex?.let { return it }
-    carriedAudioIndex?.let { return it }
-    if (unresolvedCarriedChoice) return null
-    return resolveAudioTrackOrdinal(tracks, durableAudioFingerprint)
-        ?: TrackSelectionPresets.selectBestCompatibleAudioTrackOrdinal(
+    if (requestedAudioIndex == null && carriedAudioIndex == null && unresolvedCarriedChoice) return null
+    return org.siloserver.silo.common.player.resolveStartAudioTrackOrdinal(
+        explicitOrdinal = requestedAudioIndex ?: carriedAudioIndex,
+        tracks = tracks,
+        serverOrdinal = serverAudioTrackIndex,
+        localFingerprint = durableAudioFingerprint,
+        resetToAuto = audioResetToAuto,
+    ) {
+        TrackSelectionPresets.selectBestCompatibleAudioTrackOrdinal(
             tracks = tracks,
             preferredAudioLanguage = preferredAudioLanguage,
             capabilities = capabilities,
         )
+    }
 }
 
 internal fun resolveTvSourceStartPosition(

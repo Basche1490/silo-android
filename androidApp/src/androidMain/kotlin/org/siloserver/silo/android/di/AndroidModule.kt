@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
+import org.siloserver.silo.model.profile.ActiveProfileStore
 import org.siloserver.silo.common.downloads.DownloadEnqueuer
 import org.siloserver.silo.common.downloads.DownloadSubscriptionEvaluatorFactory
 import org.siloserver.silo.common.downloads.DownloadSubscriptionWorker
@@ -17,16 +18,18 @@ import org.siloserver.silo.common.cast.SiloCastNsdBrowser
 import org.siloserver.silo.common.pairing.PairingDeviceId
 import org.siloserver.silo.common.pairing.CompanionDeviceLoginApprover
 import org.siloserver.silo.common.pairing.CompanionPairingCoordinator
+import org.siloserver.silo.common.discovery.LanServerDiscovery
+import org.siloserver.silo.common.discovery.LanServerProbe
+import org.siloserver.silo.common.discovery.NsdLanServiceBrowser
 import org.siloserver.silo.common.pairing.CompanionPairingNsdBrowser
 import org.siloserver.silo.common.pairing.CompanionPairingServerStore
 import org.siloserver.silo.common.pairing.CompanionPairingTransportFactory
 import org.siloserver.silo.common.pairing.RegistryCompanionPairingServerStore
 import org.siloserver.silo.common.pairing.RepositoryCompanionDeviceLoginApprover
-import org.siloserver.silo.common.pairing.TlsPskPairingClientTransport
+import org.siloserver.silo.common.pairing.CompanionPairingTransports
 import org.siloserver.silo.common.player.AudioCapabilityManager
 import org.siloserver.silo.common.player.AudioTrackManager
 import org.siloserver.silo.common.player.AndroidSubtitlePresentation
-import org.siloserver.silo.common.player.SiloPlayerFactory
 import org.siloserver.silo.common.player.PlaybackCapabilityDetector
 import org.siloserver.silo.common.player.PlaybackSessionManager
 import org.siloserver.silo.common.player.audio.PassthroughSuppressionScope
@@ -80,6 +83,7 @@ import org.siloserver.silo.android.ui.screens.libraries.LibrariesViewModel
 import org.siloserver.silo.viewmodel.FavoritesViewModel
 import org.siloserver.silo.viewmodel.HistoryViewModel
 import org.siloserver.silo.viewmodel.MyRequestsViewModel
+import org.siloserver.silo.viewmodel.RequestDiscoverRowViewModel
 import org.siloserver.silo.viewmodel.RecommendationsViewModel
 import org.siloserver.silo.viewmodel.RequestDetailViewModel
 import org.siloserver.silo.viewmodel.RequestSearchViewModel
@@ -90,6 +94,7 @@ import org.siloserver.silo.android.ui.screens.player.PlayerViewModel
 import org.siloserver.silo.android.ui.screens.search.SearchViewModel
 import org.siloserver.silo.android.ui.screens.settings.SettingsViewModel
 import org.siloserver.silo.android.ui.screens.settings.diagnostics.DiagnosticsViewModel
+import org.siloserver.silo.android.cast.EncryptedPrefsSiloCastRokuStore
 import org.siloserver.silo.android.cast.SharedPrefsSiloCastLastTargetStore
 import org.siloserver.silo.android.cast.SiloCastController
 import org.siloserver.silo.android.cast.SiloCastLastTargetStore
@@ -169,12 +174,33 @@ val androidModule = module {
             syncScheduler = get(),
         )
     }
+    single<org.siloserver.silo.repository.ArtworkLayout> {
+        val resources = androidContext().resources
+        val scope = this
+        org.siloserver.silo.android.ui.util.PhoneArtworkLayout(
+            screen = {
+                org.siloserver.silo.android.ui.util.PhoneArtworkLayout.Screen(
+                    resources.configuration.screenWidthDp,
+                    resources.configuration.screenHeightDp,
+                    resources.displayMetrics.density,
+                )
+            },
+            // The saved card size, seeded from its local cache before the
+            // first reads (startup's Home warm-up runs before the UI loads it).
+            posterScale = {
+                val cards = scope.get<org.siloserver.silo.common.settings.CardPresentationStore>()
+                cards.seedFromCache()
+                cards.state.value.presentation.posterSize.posterScale
+            },
+        )
+    }
     single<org.siloserver.silo.repository.port.HomeCachePort> {
         val tokenManager: TokenManager = get()
         org.siloserver.silo.common.data.repository.RoomHomeCacheRepository(
             db = get(),
             snapshotProvider = { tokenManager.snapshotCurrentScope() },
             identityTransitions = get(),
+            artwork = get(),
         )
     }
     single<org.siloserver.silo.repository.port.CatalogCachePort> {
@@ -183,10 +209,14 @@ val androidModule = module {
             db = get(),
             snapshotProvider = { tokenManager.snapshotCurrentScope() },
             identityTransitions = get(),
+            artwork = get(),
         )
     }
     single<org.siloserver.silo.repository.port.DownloadDeletionPort> {
         org.siloserver.silo.common.data.repository.RoomDownloadDeletionStore(db = get(), authorities = get(), devices = get(), identityTransitions = get())
+    }
+    single<org.siloserver.silo.repository.port.RevokedDownloadCleanupPort> {
+        org.siloserver.silo.common.downloads.RevokedDownloadCleanup(androidContext(), get(), get())
     }
     single<org.siloserver.silo.repository.DownloadSubscriptionRepository> {
         org.siloserver.silo.common.data.repository.RoomDownloadSubscriptionRepository(db = get())
@@ -231,17 +261,24 @@ val androidModule = module {
     }
     single { SiloCastNsdBrowser(androidContext()) }
     single { CompanionPairingNsdBrowser(androidContext()) }
+    // Silo servers on the local network, for server setup. One per screen visit.
+    single { LanServerProbe() }
+    factory {
+        val probe = get<LanServerProbe>()
+        LanServerDiscovery(
+            browser = NsdLanServiceBrowser(androidContext()),
+            probeIdentity = probe::identity,
+            fetchName = probe::name,
+        )
+    }
     single<CompanionPairingServerStore> { RegistryCompanionPairingServerStore(get(), get()) }
     single<CompanionDeviceLoginApprover> {
         val authRepository = get<org.siloserver.silo.repository.AuthRepository>()
         // The nearby approval card names the account approving signs the TV in as.
         RepositoryCompanionDeviceLoginApprover(get(), get(), accountNameOf = { scope -> accountNameOn(authRepository, scope) })
     }
-    single<CompanionPairingTransportFactory> {
-        CompanionPairingTransportFactory { target ->
-            TlsPskPairingClientTransport.connect(target.host, target.port)
-        }
-    }
+    // TLS-PSK to Apple TV and Android TV, plain TCP to a Roku.
+    single<CompanionPairingTransportFactory> { CompanionPairingTransports }
     single {
         CompanionPairingCoordinator(
             serverStore = get(),
@@ -258,6 +295,7 @@ val androidModule = module {
     }
     single<SiloCastLastTargetStore> { SharedPrefsSiloCastLastTargetStore(androidContext()) }
     single {
+        val activeProfiles = get<ActiveProfileStore>()
         SiloCastController(
             browser = get(),
             serverRegistry = get(),
@@ -269,6 +307,12 @@ val androidModule = module {
                 android.os.Build.MODEL?.trim()?.ifBlank { null } ?: "Android Phone"
             },
             deviceIdProvider = { PairingDeviceId.stable(androidContext()) },
+            profileNameProvider = { profileId ->
+                activeProfiles.activeProfile.value?.takeIf { it.id == profileId }?.name
+            },
+            serverIdentities = get(),
+            // Roku pairing keys live in the encrypted preferences.
+            rokuStore = EncryptedPrefsSiloCastRokuStore(get()),
         )
     }
     single<AndroidPushTokenProvider> { FirebaseAndroidPushTokenProvider(androidContext()) }
@@ -315,21 +359,6 @@ val androidModule = module {
     }
     single { AudioCapabilityManager(androidContext()) }
     single { PlaybackCapabilityDetector(androidContext(), get(), get(), get()) }
-    single {
-        SiloPlayerFactory(
-            context = androidContext(),
-            tokenManager = get(),
-            subtitleManager = get(),
-            httpDataSourceFactory = get(org.siloserver.silo.common.di.PLAYER_HTTP_DATA_SOURCE_FACTORY_QUALIFIER),
-            mediaAuthSession = get(),
-            bandwidthMeter = get(),
-            delayProcessor = get(),
-            subtitleOffsetHolder = get(),
-            libassBridge = get(),
-            playbackAnalytics = get(),
-        )
-    }
-    single { PlaybackSessionManager(get(), get(), get()) }
     single(AUDIOBOOK_PLAYBACK_SESSION_MANAGER_QUALIFIER) {
         PlaybackSessionManager(
             playbackRepository = get(),
@@ -343,10 +372,11 @@ val androidModule = module {
     // playback session so the raw phone stream is never cast.
     single { SiloCastSessionManager(androidContext()) }
     single {
+        // No network evidence: the phone's measured throughput describes its
+        // own link, not the receiver's, so cast starts carry no estimate.
         CastPlaybackPreparer(
             playbackRepository = get(),
             tokenManager = get(),
-            networkEvidenceProvider = get(),
         )
     }
     factory<VideoPlaybackStarter>(named("mobileVideoPlaybackStarter")) {
@@ -359,6 +389,8 @@ val androidModule = module {
             sessionLifecycle = get(),
             reachabilityMonitor = get(),
             userItemStatePort = get(),
+            networkEvidenceProvider = get(),
+            seriesTrackChoiceWriter = get(),
         )
     }
     factory {
@@ -461,6 +493,10 @@ val androidModule = module {
             seekIntervalStore = get(),
             activeProfileStore = get(),
             shuffleFeatureStore = get(),
+            networkEvidenceProvider = get(),
+            throughputMeter = get(),
+            seriesTrackChoiceWriter = get(),
+            trickplayManifests = get(),
         )
     }
     viewModel { HomeViewModel(get(), get(), get(), get(), getOrNull(), get(), get(), catalogLanguage = get()) }
@@ -500,6 +536,7 @@ val androidModule = module {
         ItemDetailViewModel(
             get(), get(), get(), get(), get(), get(), get(), params.get(),
             getOrNull<org.siloserver.silo.repository.port.UserItemStatePort>() ?: org.siloserver.silo.repository.port.NoOpUserItemStatePort,
+            seriesTrackChoiceWriter = get(),
         )
     }
     viewModel { params -> PersonDetailViewModel(get(), params.get(), get()) }
@@ -517,9 +554,11 @@ val androidModule = module {
     viewModel { HistoryViewModel(get(), get()) }
     viewModel { CollectionsViewModel(get()) }
     viewModel { params -> CollectionDetailViewModel(get(), get(), params.get()) }
+    viewModel { params -> org.siloserver.silo.viewmodel.SectionBrowseViewModel(get(), params.get()) }
     viewModel { RequestsViewModel(get()) }
     viewModel { RequestSearchViewModel(get()) }
     viewModel { MyRequestsViewModel(get()) }
+    viewModel { params -> RequestDiscoverRowViewModel(get(), params[0], params[1]) }
     // Platform supplies "today" and the IANA timezone; the shared ViewModel's
     // week math stays deterministic in commonTest (no Clock.System default).
     viewModel {
@@ -581,7 +620,7 @@ val androidModule = module {
         }
     }
     single { org.siloserver.silo.android.auth.ActiveProfileReset(get(), get(), get(), get(), get(), get(), get(), get(), get()) }
-    viewModel { SettingsViewModel(get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get()) }
+    viewModel { SettingsViewModel(get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get()) }
     viewModel { DiagnosticsViewModel(get()) }
     viewModel { DownloadsViewModel(get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get()) }
     viewModel { org.siloserver.silo.android.ui.screens.pairing.CompanionPairingViewModel(get(), get(), get()) }

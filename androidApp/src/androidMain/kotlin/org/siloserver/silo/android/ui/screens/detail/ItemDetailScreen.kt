@@ -1,5 +1,6 @@
 package org.siloserver.silo.android.ui.screens.detail
 
+import org.siloserver.silo.model.catalog.parentPoster
 import org.siloserver.silo.android.ui.components.SiloDropdownMenuItem
 import org.siloserver.silo.android.ui.components.SiloDropdownMenu
 import org.siloserver.silo.android.ui.components.SiloConfirmDialog
@@ -44,6 +45,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -93,6 +95,9 @@ import org.siloserver.silo.network.AccessChangeSignals
 import org.siloserver.silo.metadata.DescriptionTranslationPhase
 import org.siloserver.silo.model.feature.MetadataAiFeatureStore
 import org.siloserver.silo.model.metadata.MetadataAiOnView
+import org.siloserver.silo.common.thememusic.DetailThemeMusic
+import org.siloserver.silo.common.thememusic.ThemeMusicService
+import org.siloserver.silo.model.catalog.ThemeSelection
 import org.siloserver.silo.model.catalog.hasMachineTranslatedOverview
 import org.siloserver.silo.model.catalog.pendingEpisodeTranslationLanguage
 
@@ -112,6 +117,27 @@ internal fun seriesDetailRedirect(detail: ItemDetail): SeriesDetailRedirect? {
 }
 
 /**
+ * The theme set this page plays. An episode open on its series page plays the
+ * set it resolves to (its season's, else its series'), as the episode's own
+ * page would. While another season's episodes or a newly selected episode
+ * load, the set already playing stands, so switching seasons or episodes
+ * never plays the series' set in between or fades the theme out and back in.
+ */
+@Composable
+private fun rememberDetailThemes(state: ItemDetailUiState): ThemeSelection? {
+    val last = remember { arrayOfNulls<ThemeSelection>(1) }
+    val episode = state.selectedEpisodeDetail
+    val loading = if (state.selectedEpisodeContentId == null) state.isLoadingEpisodes else episode == null
+    val themes = when {
+        episode != null -> episode.themes ?: state.detail?.themes
+        loading -> last[0] ?: state.detail?.themes
+        else -> state.detail?.themes
+    }
+    SideEffect { last[0] = themes }
+    return themes
+}
+
+/**
  * Item detail dispatcher. Routes to [MovieDetailContent] or
  * [SeriesDetailContent] based on the item type, with the back button
  * floating over the hero so the artwork extends edge-to-edge.
@@ -126,7 +152,8 @@ fun ItemDetailScreen(
     openingArtworkUrl: String? = null,
     openingArtworkThumbhash: String? = null,
     onBackClick: () -> Unit,
-    onPlayClick: (String, Int?, Int?, Int?, Double?) -> Unit,
+    /** Content, file, whether the viewer picked that file's version, audio, subtitle, resume position. */
+    onPlayClick: (String, Int?, Boolean, Int?, Int?, Double?) -> Unit,
     onItemDetailClick: (String) -> Unit,
     onEpisodeDetailClick: (String) -> Unit = onItemDetailClick,
     onPersonClick: (String) -> Unit,
@@ -153,6 +180,7 @@ fun ItemDetailScreen(
     modifier: Modifier = Modifier,
 ) {
     val state by viewModel.uiState.collectAsState()
+    DetailThemeMusic(koinInject<ThemeMusicService>(), rememberDetailThemes(state))
     val shuffleLauncher = org.siloserver.silo.android.ui.screens.shuffle.rememberShuffleLauncher(onShuffleStarted)
     val seriesRedirect = remember(state.detail, allowSeriesRedirect) {
         state.detail?.takeIf { allowSeriesRedirect }?.let(::seriesDetailRedirect)
@@ -183,9 +211,10 @@ fun ItemDetailScreen(
     // D5: while this device is in a Watch Party, detail Play, extras, and
     // audiobook play ask to leave the party first (the player is shared).
     val soloGuard = rememberWatchPartySoloGuard()
-    val guardedPlay: (String, Int?, Int?, Int?, Double?) -> Unit = { contentId, fileId, audio, subtitle, resume ->
-        soloGuard.run { onPlayClick(contentId, fileId, audio, subtitle, resume) }
-    }
+    val guardedPlay: (String, Int?, Boolean, Int?, Int?, Double?) -> Unit =
+        { contentId, fileId, versionChosen, audio, subtitle, resume ->
+            soloGuard.run { onPlayClick(contentId, fileId, versionChosen, audio, subtitle, resume) }
+        }
     val guardedAudiobookPlay: (String, Int?, Boolean, Double?) -> Unit = { contentId, fileId, fromStart, start ->
         soloGuard.run { onAudiobookPlayClick(contentId, fileId, fromStart, start) }
     }
@@ -724,7 +753,7 @@ fun ItemDetailScreen(
                             isInWatchlist = state.isInWatchlist,
                             nextEpisodeLabel = nextEpisodeLabel,
                             selectedEpisodeContentId = state.selectedEpisodeContentId,
-                            selectedEpisodeDetail = selectedEpisodeDetail,
+                            selectedEpisodeDetail = selectedEpisodeDetail?.let(state::withPickedSeriesChoices),
                             isLoadingSelectedEpisodeDetail = state.isLoadingSelectedEpisodeDetail,
                             selectedVersionIndex = selectedEpisodeVersionIndex,
                             isAutoVersion = !state.hasExplicitVersionSelection,
@@ -734,25 +763,35 @@ fun ItemDetailScreen(
                                 if (index == null) viewModel.selectAutoVersion() else viewModel.selectVersion(index)
                             },
                             onAudioSelected = { index ->
-                                if (index == null) viewModel.selectAutoAudioTrack() else viewModel.selectAudioTrack(index)
+                                if (index == null) {
+                                    viewModel.selectAutoAudioTrack()
+                                } else {
+                                    viewModel.selectAudioTrack(index, selectedEpisodeVersion)
+                                }
                             },
                             onSubtitleSelected = { index ->
-                                if (index == null) viewModel.selectAutoSubtitle() else viewModel.selectSubtitle(index)
+                                if (index == null) {
+                                    viewModel.selectAutoSubtitle()
+                                } else {
+                                    viewModel.selectSubtitle(index, selectedEpisodeVersion)
+                                }
                             },
                             onPlayClick = {
                                 selectedEpisode?.let {
                                     guardedPlay(
                                         it.contentId,
                                         selectedEpisodeFileId,
+                                        state.hasExplicitVersionSelection,
                                         state.selectedAudioIndex.takeIf { state.hasExplicitAudioSelection },
                                         state.selectedSubtitleIndex.takeIf { state.hasExplicitSubtitleSelection },
                                         selectedEpisodeResume,
                                     )
                                 } ?: nextEpisode?.let {
-                                    guardedPlay(it.contentId, null, null, null, playbackResumePosition(it))
+                                    guardedPlay(it.contentId, null, false, null, null, playbackResumePosition(it))
                                 } ?: guardedPlay(
                                     detail.contentId,
                                     null,
+                                    false,
                                     null,
                                     null,
                                     playbackResumePosition(detail.userData),
@@ -764,18 +803,19 @@ fun ItemDetailScreen(
                                         guardedPlay(
                                             ep.contentId,
                                             selectedEpisodeFileId,
+                                            state.hasExplicitVersionSelection,
                                             state.selectedAudioIndex.takeIf { state.hasExplicitAudioSelection },
                                             state.selectedSubtitleIndex.takeIf { state.hasExplicitSubtitleSelection },
                                             0.0,
                                         )
                                     } ?: nextEpisode?.let { ep ->
-                                        guardedPlay(ep.contentId, null, null, null, 0.0)
-                                    } ?: guardedPlay(detail.contentId, null, null, null, 0.0)
+                                        guardedPlay(ep.contentId, null, false, null, null, 0.0)
+                                    } ?: guardedPlay(detail.contentId, null, false, null, null, 0.0)
                                 }
                             },
                             resumeStoppedAtLabel = activeSeriesResume?.let { formatResumeStoppedAt(it) },
                             onEpisodePlayClick = { contentId, resumePositionSeconds ->
-                                guardedPlay(contentId, null, null, null, resumePositionSeconds)
+                                guardedPlay(contentId, null, false, null, null, resumePositionSeconds)
                             },
                             onEpisodeDetailClick = { viewModel.selectSeriesEpisode(it) },
                             onEpisodeWatchedChange = { episodeContentId, watched ->
@@ -815,7 +855,7 @@ fun ItemDetailScreen(
                             onPersonClick = onPersonClick,
                             onItemDetailClick = onItemDetailClick,
                             onPlayExtra = { extra ->
-                                guardedPlay(extra.contentId, extra.fileId, null, null, 0.0)
+                                guardedPlay(extra.contentId, extra.fileId, false, null, null, 0.0)
                             },
                             onSeriesDownloadClick = {
                                 // Series/season batches are Original-only server-side
@@ -894,16 +934,19 @@ fun ItemDetailScreen(
                             null
                         }
                         val seasonPosterUrl = episodeSeason?.posterUrl?.takeIf { it.isNotBlank() }
+                        // The episode's own season/series poster, when the server sends it.
+                        val parentPoster = detail.parentPoster()
                         val portraitArtwork = if (detail.type == "episode") {
                             DetailPortraitArtwork(
-                                url = seasonPosterUrl ?: state.episodeSeriesPosterUrl,
-                                thumbhash = if (seasonPosterUrl != null) {
-                                    episodeSeason?.posterThumbhash
-                                } else {
-                                    state.episodeSeriesPosterThumbhash
+                                url = seasonPosterUrl ?: parentPoster?.url ?: state.episodeSeriesPosterUrl,
+                                thumbhash = when {
+                                    seasonPosterUrl != null -> episodeSeason?.posterThumbhash
+                                    parentPoster != null -> parentPoster.thumbhash
+                                    else -> state.episodeSeriesPosterThumbhash
                                 },
                                 reserveSpace = true,
-                                isResolved = seasonPosterUrl != null || state.episodeSeriesPosterResolved,
+                                isResolved = seasonPosterUrl != null || parentPoster != null ||
+                                    state.episodeSeriesPosterResolved,
                             )
                         } else {
                             DetailPortraitArtwork(
@@ -942,7 +985,7 @@ fun ItemDetailScreen(
                         val movieResume = playbackResumePosition(detail.userData)
                         MovieDetailContent(
                             translation = translationSlot,
-                            detail = detail,
+                            detail = state.withPickedSeriesChoices(detail),
                             similarItems = state.similarItems,
                             portraitArtwork = portraitArtwork,
                             isFavorite = state.isFavorite,
@@ -955,6 +998,7 @@ fun ItemDetailScreen(
                                 guardedPlay(
                                     detail.contentId,
                                     playbackFileId,
+                                    explicitFileId != null,
                                     explicitAudioIndex,
                                     explicitSubtitleIndex,
                                     movieResume,
@@ -965,6 +1009,7 @@ fun ItemDetailScreen(
                                     guardedPlay(
                                         detail.contentId,
                                         playbackFileId,
+                                        explicitFileId != null,
                                         explicitAudioIndex,
                                         explicitSubtitleIndex,
                                         0.0,
@@ -979,15 +1024,23 @@ fun ItemDetailScreen(
                                 if (index != null) viewModel.selectVersion(index) else viewModel.selectAutoVersion()
                             },
                             onAudioSelected = { index ->
-                                if (index != null) viewModel.selectAudioTrack(index) else viewModel.selectAutoAudioTrack()
+                                if (index != null) {
+                                    viewModel.selectAudioTrack(index, selectedVersion)
+                                } else {
+                                    viewModel.selectAutoAudioTrack()
+                                }
                             },
                             onSubtitleSelected = { index ->
-                                if (index != null) viewModel.selectSubtitle(index) else viewModel.selectAutoSubtitle()
+                                if (index != null) {
+                                    viewModel.selectSubtitle(index, selectedVersion)
+                                } else {
+                                    viewModel.selectAutoSubtitle()
+                                }
                             },
                             onPersonClick = onPersonClick,
                             onItemDetailClick = onItemDetailClick,
                             onPlayExtra = { extra ->
-                                guardedPlay(extra.contentId, extra.fileId, null, null, 0.0)
+                                guardedPlay(extra.contentId, extra.fileId, false, null, null, 0.0)
                             },
                             onSeriesClick = seriesId?.let { resolvedSeriesId ->
                                 { onSeriesClick(resolvedSeriesId) }

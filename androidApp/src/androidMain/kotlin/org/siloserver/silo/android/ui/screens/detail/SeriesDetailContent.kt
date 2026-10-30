@@ -194,6 +194,9 @@ fun SeriesDetailContent(
                             value = if (subtitleTracks.isEmpty()) "Unavailable" else formatSubtitleValueLabel(
                                 subtitleTracks,
                                 selectedSubtitleIndex,
+                                seriesSignature = loadedSelectedEpisodeDetail.effectiveSubtitleTrackSignature,
+                                seriesOff = loadedSelectedEpisodeDetail.effectiveSubtitleTrackSignature == null &&
+                                    loadedSelectedEpisodeDetail.effectiveSubtitleMode.equals("off", ignoreCase = true),
                             ),
                             onClick = { showSubtitlePicker = true },
                             interactive = subtitleTracks.size > 1,
@@ -247,7 +250,6 @@ fun SeriesDetailContent(
                 showsSeasonSelector = false,
                 selectsCenteredEpisode = !showsEpisodeDetails,
                 allowsSeasonPaging = false,
-                showsEpisodeDetails = showsEpisodeDetails,
                 tapToFocusEpisode = showsEpisodeDetails,
             )
         }

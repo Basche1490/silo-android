@@ -52,7 +52,7 @@ data class CardPresentationUiState(
 )
 
 /**
- * Cached card-presentation (poster size + caption) state for the signed-in
+ * Cached card-presentation (poster size) state for the signed-in
  * profile. Same shape as [OverlayPrefsStore]: lazy hydration, refresh on
  * foreground/reconnect via [ServerDrivenConfigRefresher], optimistic writes
  * with rollback, and [clear] at sign-out boundaries.
@@ -69,6 +69,14 @@ interface CardPresentationStore {
 
     /** Idempotent first-load. Safe to call from every provider mount. */
     suspend fun hydrateIfNeeded()
+
+    /**
+     * Applies this identity's last-known value from the local cache, without
+     * the network, if nothing has loaded yet. Idempotent and cheap after the
+     * first call, so work that runs before the UI (such as sizing the first
+     * Home read) can see the user's choice.
+     */
+    suspend fun seedFromCache() {}
 
     /** Re-probe capabilities + re-resolve the effective value. */
     suspend fun refresh()
@@ -112,6 +120,10 @@ class DefaultCardPresentationStore(
     @Volatile
     private var hasHydrated: Boolean = false
 
+    // Whether this session's cached value has been applied (or there was none).
+    @Volatile
+    private var hasSeeded: Boolean = false
+
     // The last state confirmed by a canonical read or write; the rollback
     // target for a failed optimistic edit.
     private var confirmedState: CardPresentationUiState = _state.value
@@ -146,19 +158,24 @@ class DefaultCardPresentationStore(
         // Seed from the last-known cache for this exact identity so cold start
         // renders at the right size without a resize jump once the network
         // answer lands.
-        currentIdentity()?.let { identity ->
-            readCachedState(identity)?.let { cached ->
-                synchronized(stateLock) {
-                    // Only paint the cache over untouched (pre-hydration,
-                    // pre-edit) state.
-                    if (!hasHydrated && _state.value == confirmedState) {
-                        confirmedState = cached
-                        _state.value = cached
-                    }
+        seedFromCache()
+        refresh()
+    }
+
+    override suspend fun seedFromCache() {
+        if (hasSeeded || hasHydrated) return
+        val identity = currentIdentity() ?: return
+        readCachedState(identity)?.let { cached ->
+            synchronized(stateLock) {
+                // Only paint the cache over untouched (pre-hydration,
+                // pre-edit) state.
+                if (!hasHydrated && _state.value == confirmedState) {
+                    confirmedState = cached
+                    _state.value = cached
                 }
             }
         }
-        refresh()
+        hasSeeded = true
     }
 
     /**
@@ -356,7 +373,7 @@ class DefaultCardPresentationStore(
     override suspend fun clearDeviceOverride() =
         // "Only this device" is off the moment the row is deleted, so demote
         // the source right away rather than leaving it at DeviceOverride until
-        // the refresh lands: the toggle would snap back, and a preset picked
+        // the refresh lands: the toggle would snap back, and a size picked
         // in between would be written at `profile_device` again — resurrecting
         // the override the user just removed.
         deleteScope(optimisticSource = CardPresentationSource.ClientFamily) {
@@ -441,6 +458,7 @@ class DefaultCardPresentationStore(
             _state.value = CardPresentationUiState()
             confirmedState = _state.value
             hasHydrated = false
+            hasSeeded = false
             // Let the next session's hydrateIfNeeded run instead of observing
             // the previous session's loading flag and returning early.
             _isLoading.value = false

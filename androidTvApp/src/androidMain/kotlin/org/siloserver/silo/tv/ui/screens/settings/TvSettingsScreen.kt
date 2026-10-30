@@ -56,6 +56,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import org.siloserver.silo.common.settings.SeekIntervalSettingsModel
@@ -102,16 +103,21 @@ import androidx.tv.material3.Text
 import org.siloserver.silo.common.network.clientVersionLabel
 import org.siloserver.silo.common.settings.CardPresentationSource
 import org.siloserver.silo.common.settings.CardPresentationSupport
+import org.siloserver.silo.common.settings.ConnectionSpeedSettingsModel
+import org.siloserver.silo.common.settings.PlayerSettingsStore
 import org.siloserver.silo.common.settings.TitleArtStore
 import org.siloserver.silo.common.settings.UseProfileSettingsCopy
+import org.siloserver.silo.common.settings.bufferingQualityModeLabel
+import org.siloserver.silo.common.settings.learnedLimitLabel
+import org.siloserver.silo.common.settings.shownIn
 import org.siloserver.silo.model.settings.PlaybackSettingsKeys
-import org.siloserver.silo.model.settings.CardCaption
 import org.siloserver.silo.model.settings.CardPosterSize
 import org.siloserver.silo.model.settings.CardPresentation
-import org.siloserver.silo.model.settings.CardPresentationPreset
 import org.siloserver.silo.model.settings.LanguageOptions
+import org.siloserver.silo.domain.player.BufferingQualityMode
 import org.siloserver.silo.domain.player.IntroSkipMode
 import org.siloserver.silo.domain.settings.ProfileSettingsController
+import org.siloserver.silo.model.settings.QualityChoices
 import org.siloserver.silo.model.settings.QualityPresets
 import org.siloserver.silo.model.settings.SettingKeys
 import org.siloserver.silo.model.settings.SubtitleBackgroundStylePreset
@@ -121,6 +127,7 @@ import org.siloserver.silo.model.settings.SubtitlePositionPreset
 import org.siloserver.silo.model.settings.pointSize
 import org.siloserver.silo.tv.BuildConfig
 import org.siloserver.silo.tv.R
+import org.siloserver.silo.common.R as CommonR
 import org.siloserver.silo.tv.ui.screens.settings.diagnostics.TvPrivacyPolicyDialog
 import org.siloserver.silo.common.ui.components.ProfileAvatarRef
 import org.siloserver.silo.common.ui.components.ThumbhashImage
@@ -141,6 +148,7 @@ import org.siloserver.silo.common.watchparty.WatchPartyExperiment
 import org.siloserver.silo.tv.ui.screens.player.external.TvExternalPlayerSettingsGroup // [zidoo-fork]
 import org.siloserver.silo.viewmodel.HomeViewModel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * TV Settings — a tvOS-style split rail/detail surface modeled on
@@ -187,6 +195,10 @@ fun TvSettingsScreen(
     var detailFocusRequest by remember { mutableStateOf(0) }
     var showSignOutConfirm by remember { mutableStateOf(false) }
 
+    // This ViewModel outlives a visit to Settings, so each visit re-reads the
+    // learned limit and connection speed a playback may have changed, and
+    // reads them again after a network change while it is open.
+    LaunchedEffect(viewModel) { viewModel.connectionSpeed?.follow() }
     LaunchedEffect(state.playbackOverridesReset) {
         val landed = state.playbackOverridesReset ?: return@LaunchedEffect
         Toast.makeText(context, UseProfileSettingsCopy.notice(landed), Toast.LENGTH_SHORT).show()
@@ -290,10 +302,13 @@ fun TvSettingsScreen(
         onManageServers = onManageServers,
         onOpenDiagnosticsReport = onOpenDiagnosticsReport,
         onRequestSignOut = { showSignOutConfirm = true },
-        onQualityPresetSelected = viewModel::onQualityPresetSelected,
+        onResolutionSelected = viewModel::onResolutionSelected,
+        onMaxBitrateSelected = viewModel::onMaxBitrateSelected,
         onAudioLanguageChanged = viewModel::onAudioLanguageChanged,
         onAutoPlayNextChanged = viewModel::onAutoPlayNextChanged,
         onIntroSkipModeChanged = viewModel::onIntroSkipModeChanged,
+        onBufferingQualityModeChanged = viewModel::onBufferingQualityModeChanged,
+        onResetLearnedLimit = viewModel::onResetLearnedLimit,
         onAutoSkipCreditsChanged = viewModel::onAutoSkipCreditsChanged,
         onHideUnwatchedEpisodeImagesChanged = viewModel::setHideUnwatchedEpisodeImages,
         onHideUnwatchedEpisodeOverviewsChanged = viewModel::setHideUnwatchedEpisodeOverviews,
@@ -308,6 +323,7 @@ fun TvSettingsScreen(
         onResetPlaybackOverrides = viewModel::resetPlaybackOverrides,
         onUseProfileSetting = viewModel::onUseProfileSetting,
         seekIntervals = viewModel.seekIntervals,
+        connectionSpeed = viewModel.connectionSpeed,
         onSubtitleModeChanged = viewModel::onSubtitleModeChanged,
         onSubtitleLanguageChanged = viewModel::onSubtitleLanguageChanged,
         onMetadataLanguageChanged = viewModel::onMetadataLanguageChanged,
@@ -442,11 +458,15 @@ private fun SettingsSplitLayout(
     onManageServers: () -> Unit,
     onOpenDiagnosticsReport: (reportId: String) -> Unit,
     onRequestSignOut: () -> Unit,
-    /** Receives a [QualityPresets] preset id. */
-    onQualityPresetSelected: (String) -> Unit,
+    /** Receives a [QualityChoices.RESOLUTIONS] value. */
+    onResolutionSelected: (String) -> Unit,
+    /** Receives a [QualityChoices.bitrateChoices] value; null is no limit. */
+    onMaxBitrateSelected: (Int?) -> Unit,
     onAudioLanguageChanged: (String) -> Unit,
     onAutoPlayNextChanged: (Boolean) -> Unit,
     onIntroSkipModeChanged: (IntroSkipMode) -> Unit,
+    onBufferingQualityModeChanged: (BufferingQualityMode) -> Unit,
+    onResetLearnedLimit: () -> Unit,
     onAutoSkipCreditsChanged: (Boolean) -> Unit,
     onHideUnwatchedEpisodeImagesChanged: (Boolean) -> Unit,
     onHideUnwatchedEpisodeOverviewsChanged: (Boolean) -> Unit,
@@ -461,6 +481,7 @@ private fun SettingsSplitLayout(
     onResetPlaybackOverrides: () -> Unit,
     onUseProfileSetting: (String) -> Unit,
     seekIntervals: SeekIntervalSettingsModel? = null,
+    connectionSpeed: ConnectionSpeedSettingsModel? = null,
     onSubtitleModeChanged: (SubtitleMode) -> Unit,
     onSubtitleLanguageChanged: (String) -> Unit,
     onMetadataLanguageChanged: (String) -> Unit,
@@ -527,10 +548,13 @@ private fun SettingsSplitLayout(
             onProfileLaunchBehaviorChanged = onProfileLaunchBehaviorChanged,
             onManageServers = onManageServers,
             onOpenDiagnosticsReport = onOpenDiagnosticsReport,
-            onQualityPresetSelected = onQualityPresetSelected,
+            onResolutionSelected = onResolutionSelected,
+            onMaxBitrateSelected = onMaxBitrateSelected,
             onAudioLanguageChanged = onAudioLanguageChanged,
             onAutoPlayNextChanged = onAutoPlayNextChanged,
             onIntroSkipModeChanged = onIntroSkipModeChanged,
+            onBufferingQualityModeChanged = onBufferingQualityModeChanged,
+            onResetLearnedLimit = onResetLearnedLimit,
             onAutoSkipCreditsChanged = onAutoSkipCreditsChanged,
             onHideUnwatchedEpisodeImagesChanged = onHideUnwatchedEpisodeImagesChanged,
             onHideUnwatchedEpisodeOverviewsChanged = onHideUnwatchedEpisodeOverviewsChanged,
@@ -545,6 +569,7 @@ private fun SettingsSplitLayout(
             onResetPlaybackOverrides = onResetPlaybackOverrides,
             onUseProfileSetting = onUseProfileSetting,
             seekIntervals = seekIntervals,
+            connectionSpeed = connectionSpeed,
             onSubtitleModeChanged = onSubtitleModeChanged,
             onSubtitleLanguageChanged = onSubtitleLanguageChanged,
             onMetadataLanguageChanged = onMetadataLanguageChanged,
@@ -812,11 +837,15 @@ private fun SettingsDetailPane(
     onProfileLaunchBehaviorChanged: (ProfileLaunchBehavior) -> Unit,
     onManageServers: () -> Unit,
     onOpenDiagnosticsReport: (reportId: String) -> Unit,
-    /** Receives a [QualityPresets] preset id. */
-    onQualityPresetSelected: (String) -> Unit,
+    /** Receives a [QualityChoices.RESOLUTIONS] value. */
+    onResolutionSelected: (String) -> Unit,
+    /** Receives a [QualityChoices.bitrateChoices] value; null is no limit. */
+    onMaxBitrateSelected: (Int?) -> Unit,
     onAudioLanguageChanged: (String) -> Unit,
     onAutoPlayNextChanged: (Boolean) -> Unit,
     onIntroSkipModeChanged: (IntroSkipMode) -> Unit,
+    onBufferingQualityModeChanged: (BufferingQualityMode) -> Unit,
+    onResetLearnedLimit: () -> Unit,
     onAutoSkipCreditsChanged: (Boolean) -> Unit,
     onHideUnwatchedEpisodeImagesChanged: (Boolean) -> Unit,
     onHideUnwatchedEpisodeOverviewsChanged: (Boolean) -> Unit,
@@ -831,6 +860,7 @@ private fun SettingsDetailPane(
     onResetPlaybackOverrides: () -> Unit,
     onUseProfileSetting: (String) -> Unit,
     seekIntervals: SeekIntervalSettingsModel? = null,
+    connectionSpeed: ConnectionSpeedSettingsModel? = null,
     onSubtitleModeChanged: (SubtitleMode) -> Unit,
     onSubtitleLanguageChanged: (String) -> Unit,
     onMetadataLanguageChanged: (String) -> Unit,
@@ -872,10 +902,13 @@ private fun SettingsDetailPane(
             TvSettingsCategory.Playback -> TvPlaybackSettingsPane(
                 state = state,
                 firstFocusRequester = detailFocusRequester,
-                onQualityPresetSelected = onQualityPresetSelected,
+                onResolutionSelected = onResolutionSelected,
+                onMaxBitrateSelected = onMaxBitrateSelected,
                 onAudioLanguageChanged = onAudioLanguageChanged,
                 onAutoPlayNextChanged = onAutoPlayNextChanged,
                 onIntroSkipModeChanged = onIntroSkipModeChanged,
+                onBufferingQualityModeChanged = onBufferingQualityModeChanged,
+                onResetLearnedLimit = onResetLearnedLimit,
                 onAutoSkipCreditsChanged = onAutoSkipCreditsChanged,
                 onHideUnwatchedEpisodeImagesChanged = onHideUnwatchedEpisodeImagesChanged,
                 onHideUnwatchedEpisodeOverviewsChanged = onHideUnwatchedEpisodeOverviewsChanged,
@@ -890,6 +923,7 @@ private fun SettingsDetailPane(
                 onResetPlaybackOverrides = onResetPlaybackOverrides,
                 onUseProfileSetting = onUseProfileSetting,
                 seekIntervals = seekIntervals,
+                connectionSpeed = connectionSpeed,
             )
             TvSettingsCategory.Subtitles -> TvSubtitleSettingsPane(
                 state = state,
@@ -990,7 +1024,7 @@ private fun TvGeneralSettingsPane(
     onCardPresentationDeviceOnlyChanged: (Boolean) -> Unit,
     onUseProfileCardDefault: () -> Unit,
 ) {
-    var activeCardPicker by remember { mutableStateOf<CardPresentationPicker?>(null) }
+    var showPosterSizePicker by remember { mutableStateOf(false) }
     var showProfileLaunchPicker by remember { mutableStateOf(false) }
     var showHomeSectionsEditor by remember { mutableStateOf(false) }
     val titleArtStore: TitleArtStore = koinInject()
@@ -1043,19 +1077,9 @@ private fun TvGeneralSettingsPane(
                     )
                 } else {
                     SettingsValueRow(
-                        label = "Preset",
-                        value = state.cardPresentation.preset?.displayName ?: "Custom",
-                        onClick = { activeCardPicker = CardPresentationPicker.Preset },
-                    )
-                    SettingsValueRow(
                         label = "Poster Size",
                         value = state.cardPresentation.posterSize.displayName,
-                        onClick = { activeCardPicker = CardPresentationPicker.PosterSize },
-                    )
-                    SettingsValueRow(
-                        label = "Captions",
-                        value = state.cardPresentation.caption.displayName,
-                        onClick = { activeCardPicker = CardPresentationPicker.Captions },
+                        onClick = { showPosterSizePicker = true },
                     )
                     SettingsToggleRow(
                         label = "Only This Device",
@@ -1070,15 +1094,16 @@ private fun TvGeneralSettingsPane(
                         )
                     }
                     SettingsFooterText(
-                        text = "Start with Balanced, Compact, Cinema, or Artwork Only, then fine-tune size " +
-                            "and captions. These choices sync with other TVs on this profile unless Only " +
-                            "This Device is on.",
+                        text = "Poster size syncs with other TVs on this profile unless Only This Device is on.",
                     )
                 }
             }
         }
         item {
             TvTitleArtSettingsGroup(store = titleArtStore)
+        }
+        item {
+            TvThemeMusicSettingsGroup(store = koinInject())
         }
         item {
             // tvOS TVGeneralSettingsPane TOP MENU parity: the Audiobooks tab
@@ -1109,28 +1134,8 @@ private fun TvGeneralSettingsPane(
         // cascade (Collections). (QA 2026-07-08.)
     }
 
-    when (activeCardPicker) {
-        CardPresentationPicker.Preset -> TvSettingsPickerSheet(
-            title = "Preset",
-            // Synthetic "Custom" appears only while the current pair matches
-            // no preset; it is a label for the state, not a choice.
-            options = buildList {
-                CardPresentationPreset.entries.forEach {
-                    add(PickerOption(it.name, it.displayName))
-                }
-                if (state.cardPresentation.preset == null) {
-                    add(PickerOption(CustomCardPresetId, "Custom"))
-                }
-            },
-            selectedId = state.cardPresentation.preset?.name ?: CustomCardPresetId,
-            onSelect = { id ->
-                CardPresentationPreset.entries.firstOrNull { it.name == id }
-                    ?.let { onCardPresentationChanged(it.presentation) }
-                activeCardPicker = null
-            },
-            onDismiss = { activeCardPicker = null },
-        )
-        CardPresentationPicker.PosterSize -> TvSettingsPickerSheet(
+    if (showPosterSizePicker) {
+        TvSettingsPickerSheet(
             title = "Poster Size",
             options = CardPosterSize.entries.map { PickerOption(it.raw, it.displayName) },
             selectedId = state.cardPresentation.posterSize.raw,
@@ -1138,23 +1143,10 @@ private fun TvGeneralSettingsPane(
                 CardPosterSize.fromRaw(id)?.let {
                     onCardPresentationChanged(state.cardPresentation.copy(posterSize = it))
                 }
-                activeCardPicker = null
+                showPosterSizePicker = false
             },
-            onDismiss = { activeCardPicker = null },
+            onDismiss = { showPosterSizePicker = false },
         )
-        CardPresentationPicker.Captions -> TvSettingsPickerSheet(
-            title = "Captions",
-            options = CardCaption.entries.map { PickerOption(it.raw, it.displayName) },
-            selectedId = state.cardPresentation.caption.raw,
-            onSelect = { id ->
-                CardCaption.fromRaw(id)?.let {
-                    onCardPresentationChanged(state.cardPresentation.copy(caption = it))
-                }
-                activeCardPicker = null
-            },
-            onDismiss = { activeCardPicker = null },
-        )
-        null -> Unit
     }
 
     if (showProfileLaunchPicker) {
@@ -1180,14 +1172,8 @@ private fun TvGeneralSettingsPane(
     }
 }
 
-private enum class CardPresentationPicker {
-    Preset,
-    PosterSize,
-    Captions,
-}
-
-/** Picker id for the synthetic "Custom" preset row (never on the wire). */
-private const val CustomCardPresetId = "custom"
+/** Picker id for the Maximum Bitrate sheet's "No limit" row (never on the wire). */
+private const val NoBitrateLimitId = "no_limit"
 
 /** How Profile Selection's descriptions name this device. */
 private const val PROFILE_LAUNCH_DEVICE = "this Android TV"
@@ -1196,11 +1182,15 @@ private const val PROFILE_LAUNCH_DEVICE = "this Android TV"
 private fun TvPlaybackSettingsPane(
     state: TvSettingsViewModel.UiState,
     firstFocusRequester: FocusRequester,
-    /** Receives a [QualityPresets] preset id. */
-    onQualityPresetSelected: (String) -> Unit,
+    /** Receives a [QualityChoices.RESOLUTIONS] value. */
+    onResolutionSelected: (String) -> Unit,
+    /** Receives a [QualityChoices.bitrateChoices] value; null is no limit. */
+    onMaxBitrateSelected: (Int?) -> Unit,
     onAudioLanguageChanged: (String) -> Unit,
     onAutoPlayNextChanged: (Boolean) -> Unit,
     onIntroSkipModeChanged: (IntroSkipMode) -> Unit,
+    onBufferingQualityModeChanged: (BufferingQualityMode) -> Unit,
+    onResetLearnedLimit: () -> Unit,
     onAutoSkipCreditsChanged: (Boolean) -> Unit,
     onHideUnwatchedEpisodeImagesChanged: (Boolean) -> Unit,
     onHideUnwatchedEpisodeOverviewsChanged: (Boolean) -> Unit,
@@ -1216,6 +1206,7 @@ private fun TvPlaybackSettingsPane(
     /** Receives the key of the control going back to the profile's value. */
     onUseProfileSetting: (String) -> Unit,
     seekIntervals: SeekIntervalSettingsModel? = null,
+    connectionSpeed: ConnectionSpeedSettingsModel? = null,
 ) {
     var activePicker by remember { mutableStateOf<PlaybackPicker?>(null) }
     var confirmingReset by remember { mutableStateOf(false) }
@@ -1231,7 +1222,9 @@ private fun TvPlaybackSettingsPane(
     // handed back to the switch above it rather than lost.
     val autoPlayNextFocus = remember { FocusRequester() }
     val skipCreditsFocus = remember { FocusRequester() }
+    val bufferingQualityFocus = remember { FocusRequester() }
     val seekState = seekIntervals?.state?.collectAsState()?.value
+    val connectionState = connectionSpeed?.state?.collectAsState()?.value
     var seekPicker by remember { mutableStateOf<Pair<SeekMedia, SeekDirection>?>(null) }
     // Where focus goes when a skip-interval group drops the focused row and
     // has no row of its own left to take it (the row just above the groups).
@@ -1254,11 +1247,46 @@ private fun TvPlaybackSettingsPane(
         item {
             SettingsGroup(title = "Streaming") {
                 SettingsValueRow(
-                    label = "Quality",
-                    value = QualityPresets.describe(state.qualityResolution, state.maxBitrateKbps),
-                    onClick = { activePicker = PlaybackPicker.Quality },
+                    label = "Resolution",
+                    value = QualityChoices.resolutionLabel(state.qualityResolution),
+                    onClick = { activePicker = PlaybackPicker.Resolution },
                     focusRequester = firstFocusRequester,
                 )
+                SettingsValueRow(
+                    label = "Maximum Bitrate",
+                    value = QualityChoices.bitrateLabel(state.maxBitrateKbps),
+                    onClick = { activePicker = PlaybackPicker.MaxBitrate },
+                    // Takes the learned-limit row's focus when the buffering row is hidden.
+                    focusRequester = bufferingQualityFocus.takeIf { !state.bufferingQualityModeSupported },
+                )
+                // Next to Maximum Bitrate, the manual cap on Auto it
+                // complements; the same value row and picker sheet as Skip
+                // Intros. Hidden against a server without the setting.
+                if (state.bufferingQualityModeSupported) {
+                    SettingsValueRow(
+                        label = stringResource(CommonR.string.settings_buffering_quality_title),
+                        value = stringResource(bufferingQualityModeLabel(state.bufferingQualityMode)),
+                        onClick = { activePicker = PlaybackPicker.BufferingQualityMode },
+                        focusRequester = bufferingQualityFocus,
+                    )
+                    SettingsFooterText(text = stringResource(CommonR.string.settings_buffering_quality_description))
+                }
+                state.learnedLimit.shownIn(state.bufferingQualityMode)?.let { limit ->
+                    // Leaves once the reset lands, so, as with a switch's "Use
+                    // Profile Setting" row, focus is handed to the row above it
+                    // rather than lost.
+                    SettingsValueRow(
+                        label = learnedLimitLabel(limit),
+                        value = stringResource(CommonR.string.settings_learned_limit_reset),
+                        onClick = {
+                            bufferingQualityFocus.requestFocus()
+                            onResetLearnedLimit()
+                        },
+                    )
+                    if (state.learnedLimitResetFailed) {
+                        SettingsFooterText(text = stringResource(CommonR.string.settings_learned_limit_reset_failed))
+                    }
+                }
                 SettingsValueRow(
                     label = "Audio Language",
                     value = LanguageOptions.label(
@@ -1300,20 +1328,27 @@ private fun TvPlaybackSettingsPane(
                     checked = state.trueBlackBars,
                     onCheckedChange = onTrueBlackBarsChanged,
                 )
-                // tvOS footer: the chosen preset's description, then the
-                // caveat for Force HDR Passthrough. The True Black Bars
-                // sentence is Android TV's own.
+                // tvOS footer: what the quality choices do, then the caveat
+                // for Force HDR Passthrough. The True Black Bars sentence is
+                // Android TV's own.
                 SettingsFooterText(
-                    text = (
-                        QualityPresets.presetFor(state.qualityResolution, state.maxBitrateKbps)?.description
-                            ?: "${QualityPresets.describe(state.qualityResolution, state.maxBitrateKbps)}."
-                        ) + " Force HDR Passthrough allows HDR playback when this TV doesn't report " +
+                    text = QualityChoices.description(state.qualityResolution, state.maxBitrateKbps) +
+                        " Force HDR Passthrough allows HDR playback when this TV doesn't report " +
                         "support. It does not force the HDMI output into HDR; Android may still convert " +
                         "the picture to SDR. Enable it only if you've confirmed your TV supports the " +
                         "source format. Unsupported formats may produce a black screen or incorrect colors." +
                         " True Black Bars stops Silo from drawing the bars around the picture during " +
                         "playback. Try it if they look grey in HDR or Dolby Vision, and turn it off again " +
                         "if they get lighter or show a thin line.",
+                )
+            }
+        }
+        // Under Streaming, whose buffering and learned-limit rows it explains.
+        if (connectionState?.visible == true) {
+            item {
+                TvConnectionSettingsGroup(
+                    state = connectionState.shownIn(state.bufferingQualityMode, state.learnedLimit),
+                    onTestSpeed = { connectionSpeed?.testSpeed() },
                 )
             }
         }
@@ -1439,24 +1474,46 @@ private fun TvPlaybackSettingsPane(
     }
 
     when (activePicker) {
-        // The picker offers presets; a stored pair no preset covers (set
-        // through the API, or left by a legacy compound value) selects
-        // nothing rather than silently highlighting the wrong entry.
-        PlaybackPicker.Quality -> {
+        PlaybackPicker.Resolution -> {
             val (options, selectedId) = profileLayered(
                 PlaybackSettingsKeys.PreferredQuality,
-                QualityPresets.ALL.map { PickerOption(it.id, it.label) },
-                QualityPresets.presetFor(state.qualityResolution, state.maxBitrateKbps)?.id ?: "",
+                QualityChoices.RESOLUTIONS.map { PickerOption(it.value, it.label) },
+                QualityPresets.normalizeResolution(state.qualityResolution),
             )
             TvSettingsPickerSheet(
-                title = "Quality",
+                title = "Resolution",
                 options = options,
                 selectedId = selectedId,
                 onSelect = { id ->
                     if (id == UseProfileSettingId) {
                         onUseProfileSetting(PlaybackSettingsKeys.PreferredQuality)
                     } else {
-                        onQualityPresetSelected(id)
+                        onResolutionSelected(id)
+                    }
+                    activePicker = null
+                },
+                onDismiss = { activePicker = null },
+            )
+        }
+        // A stored cap that is not one of the choices is listed in its place,
+        // so it stays visible and selected.
+        PlaybackPicker.MaxBitrate -> {
+            val (options, selectedId) = profileLayered(
+                PlaybackSettingsKeys.MaxBitrateKbps,
+                QualityChoices.bitrateChoices(state.maxBitrateKbps).map {
+                    PickerOption(it.value?.toString() ?: NoBitrateLimitId, it.label)
+                },
+                state.maxBitrateKbps?.toString() ?: NoBitrateLimitId,
+            )
+            TvSettingsPickerSheet(
+                title = "Maximum Bitrate",
+                options = options,
+                selectedId = selectedId,
+                onSelect = { id ->
+                    when (id) {
+                        UseProfileSettingId -> onUseProfileSetting(PlaybackSettingsKeys.MaxBitrateKbps)
+                        NoBitrateLimitId -> onMaxBitrateSelected(null)
+                        else -> id.toIntOrNull()?.let(onMaxBitrateSelected)
                     }
                     activePicker = null
                 },
@@ -1522,6 +1579,30 @@ private fun TvPlaybackSettingsPane(
                         onUseProfileSetting(PlaybackSettingsKeys.IntroSkipMode)
                     } else {
                         IntroSkipMode.entries.firstOrNull { it.wireValue == id }?.let(onIntroSkipModeChanged)
+                    }
+                    activePicker = null
+                },
+                onDismiss = { activePicker = null },
+            )
+        }
+        PlaybackPicker.BufferingQualityMode -> {
+            val (options, selectedId) = profileLayered(
+                PlaybackSettingsKeys.BufferingQualityMode,
+                BufferingQualityMode.entries.map { mode ->
+                    PickerOption(mode.wireValue, stringResource(bufferingQualityModeLabel(mode)))
+                },
+                state.bufferingQualityMode.wireValue,
+            )
+            TvSettingsPickerSheet(
+                title = stringResource(CommonR.string.settings_buffering_quality_title),
+                options = options,
+                selectedId = selectedId,
+                onSelect = { id ->
+                    if (id == UseProfileSettingId) {
+                        onUseProfileSetting(PlaybackSettingsKeys.BufferingQualityMode)
+                    } else {
+                        BufferingQualityMode.entries.firstOrNull { it.wireValue == id }
+                            ?.let(onBufferingQualityModeChanged)
                     }
                     activePicker = null
                 },
@@ -1850,79 +1931,70 @@ private fun TvSubtitleSettingsPane(
                     checked = state.subtitleMatchesDevice,
                     onCheckedChange = onSubtitleMatchesDeviceChanged,
                 )
+                // Appearance is a profile preference; this keeps a separate
+                // one (and subtitle timing) for this TV only.
                 SettingsToggleRow(
-                    label = "Custom Subtitle Appearance",
+                    label = "Only on This Device",
                     checked = state.subtitleUsesDeviceOverride,
                     onCheckedChange = onSubtitleDeviceOverrideEnabledChanged,
                 )
-                SettingsNestedGroup(enabled = state.subtitleUsesDeviceOverride) {
+                SettingsNestedGroup(enabled = true) {
                     SettingsValueRow(
                         label = "Font Size",
                         value = TvSubtitleAppearanceOptions.fontSizeLabel(appearance.fontSize),
                         onClick = { activePicker = SubtitlePicker.FontSize },
-                        enabled = state.subtitleUsesDeviceOverride,
                     )
                     SettingsValueRow(
                         label = "Font Family",
                         value = TvSubtitleAppearanceOptions.fontFamilyLabel(appearance.fontFamily),
                         onClick = { activePicker = SubtitlePicker.FontFamily },
-                        enabled = state.subtitleUsesDeviceOverride,
                     )
                     SettingsValueRow(
                         label = "Font Color",
                         value = TvSubtitleAppearanceOptions.fontColorLabel(appearance.fontColor),
                         onClick = { activePicker = SubtitlePicker.FontColor },
-                        enabled = state.subtitleUsesDeviceOverride,
                     )
                     if (state.subtitleTextOpacitySupported) {
                         SettingsValueRow(
                             label = "Text Opacity",
                             value = "${appearance.textOpacity}%",
                             onClick = { activePicker = SubtitlePicker.TextOpacity },
-                            enabled = state.subtitleUsesDeviceOverride,
-                        )
+                            )
                     }
                     SettingsToggleRow(
                         label = "Text Outline",
                         checked = appearance.textOutline,
                         onCheckedChange = onSubtitleTextOutlineChanged,
-                        enabled = state.subtitleUsesDeviceOverride,
                     )
                     SettingsValueRow(
                         label = "Outline Color",
                         value = TvSubtitleAppearanceOptions.outlineColorLabel(appearance.textOutlineColor),
                         onClick = { activePicker = SubtitlePicker.OutlineColor },
-                        enabled = state.subtitleUsesDeviceOverride,
                     )
                     SettingsValueRow(
                         label = "Background Style",
                         value = TvSubtitleAppearanceOptions.backgroundStyleLabel(appearance.backgroundStyle),
                         onClick = { activePicker = SubtitlePicker.BackgroundStyle },
-                        enabled = state.subtitleUsesDeviceOverride,
                     )
                     SettingsValueRow(
                         label = "Background Opacity",
                         value = "${appearance.backgroundOpacity}%",
                         onClick = { activePicker = SubtitlePicker.BackgroundOpacity },
-                        enabled = state.subtitleUsesDeviceOverride,
                     )
                     SettingsValueRow(
                         label = "Background Color",
                         value = TvSubtitleAppearanceOptions.backgroundColorLabel(appearance.backgroundColor),
                         onClick = { activePicker = SubtitlePicker.BackgroundColor },
-                        enabled = state.subtitleUsesDeviceOverride,
                     )
                     SettingsValueRow(
                         label = "Position",
                         value = TvSubtitleAppearanceOptions.positionLabel(appearance.position),
                         onClick = { activePicker = SubtitlePicker.Position },
-                        enabled = state.subtitleUsesDeviceOverride,
                     )
                     SettingsActionRow(
-                        label = "Reset Custom Appearance",
+                        label = "Reset Appearance",
                         onClick = { showResetConfirmation = true },
                         destructive = true,
-                        enabled = state.subtitleUsesDeviceOverride,
                     )
                 }
             }
@@ -1930,9 +2002,9 @@ private fun TvSubtitleSettingsPane(
         item {
             SettingsFooterText(
                 text = if (state.subtitleUsesDeviceOverride) {
-                    "Appearance is saved on the server for this profile on this device."
+                    "Only on this device."
                 } else {
-                    "Appearance is using the server fallback for this profile on this device."
+                    "Saved for this profile on all devices."
                 },
             )
         }
@@ -2072,8 +2144,8 @@ private fun TvSubtitleSettingsPane(
 
     if (showResetConfirmation) {
         TvSettingsConfirmDialog(
-            title = "Reset custom appearance?",
-            message = "This restores all custom subtitle appearance options to their defaults.",
+            title = "Reset subtitle appearance?",
+            message = "This restores every subtitle appearance option to its default.",
             confirmLabel = "Reset",
             onConfirm = {
                 showResetConfirmation = false
@@ -2231,10 +2303,12 @@ private fun accountSubtitle(state: TvSettingsViewModel.UiState): String {
 }
 
 private enum class PlaybackPicker {
-    Quality,
+    Resolution,
+    MaxBitrate,
     AudioLanguage,
     NextUpPrompt,
     IntroSkipMode,
+    BufferingQualityMode,
     ResumeRewind,
     PassOutThreshold,
 }
@@ -2980,6 +3054,58 @@ private fun nextUpPromptLabel(seconds: Int): String = when {
     seconds < 60 -> "$seconds seconds before end"
     seconds == 60 -> "1 minute before end"
     else -> "${seconds / 60} minutes before end"
+}
+
+/**
+ * "Theme Music" and "Loop Theme Music", as the web app's device settings offer
+ * them. Each switch writes this TV's value; one set for the profile elsewhere
+ * applies until then.
+ */
+@Composable
+private fun TvThemeMusicSettingsGroup(store: PlayerSettingsStore) {
+    val enabled by store.themeMusicEnabledFlow.collectAsState(initial = false)
+    val loop by store.themeMusicLoopFlow.collectAsState(initial = false)
+    val overrides by store.deviceOverrideKeysFlow.collectAsState(initial = emptySet())
+    val scope = rememberCoroutineScope()
+    val enabledFocus = remember { FocusRequester() }
+    val loopFocus = remember { FocusRequester() }
+    fun overridden(key: String) = PlaybackSettingsKeys.hasDeviceOverride(overrides, key)
+    SettingsGroup(title = "Theme Music") {
+        SettingsToggleRow(
+            label = "Theme Music",
+            checked = enabled,
+            onCheckedChange = { scope.launch { store.setThemeMusicEnabled(it) } },
+            focusRequester = enabledFocus,
+        )
+        if (overridden(PlaybackSettingsKeys.ThemeMusicEnabled)) {
+            UseProfileSettingRow(
+                setting = "Theme Music",
+                onClick = {
+                    enabledFocus.requestFocus()
+                    scope.launch { store.resetDeviceSetting(PlaybackSettingsKeys.ThemeMusicEnabled) }
+                },
+            )
+        }
+        SettingsToggleRow(
+            label = "Loop Theme Music",
+            checked = loop,
+            onCheckedChange = { scope.launch { store.setThemeMusicLoop(it) } },
+            focusRequester = loopFocus,
+        )
+        if (overridden(PlaybackSettingsKeys.ThemeMusicLoop)) {
+            UseProfileSettingRow(
+                setting = "Loop Theme Music",
+                onClick = {
+                    loopFocus.requestFocus()
+                    scope.launch { store.resetDeviceSetting(PlaybackSettingsKeys.ThemeMusicLoop) }
+                },
+            )
+        }
+        SettingsFooterText(
+            text = "Play a title's theme music while its page is open, when the server has one. " +
+                "Loop repeats it until you leave the page.",
+        )
+    }
 }
 
 /**

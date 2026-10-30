@@ -202,6 +202,8 @@ fun TvMainShell(
         mediaScope: String?,
     ) -> Unit,
     onOpenCollectionDetail: (collectionId: String, title: String) -> Unit,
+    /** Opens a row's full page: a Home row when libraryId is null. */
+    onOpenSectionBrowse: (sectionId: String, title: String, libraryId: Int?, mediaScope: String?) -> Unit,
     onSignedOut: () -> Unit,
     onSwitchProfile: () -> Unit,
     onSwitchServer: () -> Unit,
@@ -415,7 +417,7 @@ fun TvMainShell(
     var detailReturnRoot by rememberSaveable { mutableStateOf<String?>(null) }
     val restoreHomeContentAfterDetail = detailReturnRoot == TvMainRoute.Home.route
     val restoreForYouContentAfterDetail = detailReturnRoot == TvMainRoute.ForYou.route
-    var suppressHomeRefreshAfterDetail by rememberSaveable { mutableStateOf(false) }
+    var suppressFeedRefreshAfterDetail by rememberSaveable { mutableStateOf(false) }
     var homeDetailReturnFocusState by remember { mutableStateOf(TvDetailReturnFocusState()) }
     var forYouDetailReturnFocusState by remember { mutableStateOf(TvDetailReturnFocusState()) }
     var detailReturnFocusRequest by remember { mutableIntStateOf(0) }
@@ -484,25 +486,26 @@ fun TvMainShell(
         }
         homeDetailReturnFocusState = completeTvDetailReturnRetry(homeDetailReturnFocusState)
         forYouDetailReturnFocusState = completeTvDetailReturnRetry(forYouDetailReturnFocusState)
-        // The detail-return ON_RESUME event has now passed and Home is stable;
+        // The detail-return ON_RESUME event has now passed and the feed is stable;
         // future real resumes (playback/background) should refresh normally.
-        suppressHomeRefreshAfterDetail = false
+        suppressFeedRefreshAfterDetail = false
     }
     val openHomeItemDetail: (String) -> Unit = { contentId ->
         restoreContentAfterDetail = true
         detailReturnRoot = TvMainRoute.Home.route
-        suppressHomeRefreshAfterDetail = true
+        suppressFeedRefreshAfterDetail = true
         onOpenItemDetail(contentId)
     }
     val openHomeItemDetailSelection: (String, Int?, String?) -> Unit = { contentId, seasonNumber, episodeContentId ->
         restoreContentAfterDetail = true
         detailReturnRoot = TvMainRoute.Home.route
-        suppressHomeRefreshAfterDetail = true
+        suppressFeedRefreshAfterDetail = true
         onOpenItemDetailSelection(contentId, seasonNumber, episodeContentId)
     }
     val openForYouItemDetail: (String) -> Unit = { contentId ->
         restoreContentAfterDetail = true
         detailReturnRoot = TvMainRoute.ForYou.route
+        suppressFeedRefreshAfterDetail = true
         onOpenItemDetail(contentId)
     }
     // Same generic hand-back for roots that render inside the shell but do not
@@ -541,6 +544,21 @@ fun TvMainShell(
         detailReturnRoot = null
         onOpenCollectionDetail(collectionId, title)
     }
+    // A row's full page is an outer route like a detail page, so it takes the
+    // same hand-back: Home's feed restores focus to the row's "Explore all"
+    // card, and a library's feed does the same through its own return target.
+    val openHomeSection: (org.siloserver.silo.model.section.ResolvedSection) -> Unit = { section ->
+        restoreContentAfterDetail = true
+        detailReturnRoot = TvMainRoute.Home.route
+        suppressFeedRefreshAfterDetail = true
+        onOpenSectionBrowse(section.id, section.title, null, null)
+    }
+    val openLibrarySection: (org.siloserver.silo.model.section.ResolvedSection, Int, String?) -> Unit =
+        { section, libraryId, mediaScope ->
+            restoreContentAfterDetail = true
+            detailReturnRoot = null
+            onOpenSectionBrowse(section.id, section.title, libraryId, mediaScope)
+        }
     var contentUpFallback by remember { mutableStateOf<((Boolean) -> Boolean)?>(null) }
     // Feeds that registered the up-fallback slot, were superseded by a newer
     // feed, and are still awaiting their (now-stale) onDispose. Tracking them
@@ -1226,6 +1244,7 @@ fun TvMainShell(
                         onOpenForYou = {
                             openForYou(null)
                         },
+                        onExploreSection = openHomeSection,
                         onOpenSettings = {
                             navigateToRoute(TvMainRoute.Settings.route)
                             moveFocusToContent(TvMainRoute.Settings.route)
@@ -1236,7 +1255,7 @@ fun TvMainShell(
                         detailReturnCardFocusRequester = homeDetailReturnCardFocusRequester,
                         firstRowFocusRequester = homeFirstItemFocusRequester,
                         firstRowContainerFocusRequester = homeFirstRowContainerFocusRequester,
-                        shouldRefreshOnResume = { !suppressHomeRefreshAfterDetail },
+                        shouldRefreshOnResume = { !suppressFeedRefreshAfterDetail },
                         onContentUpFallbackChanged = onContentUpFallback,
                     )
                 }
@@ -1253,6 +1272,7 @@ fun TvMainShell(
                         onOpenForYou = {
                             openForYou(null)
                         },
+                        onExploreSection = openHomeSection,
                         onOpenSettings = {
                             navigateToRoute(TvMainRoute.Settings.route)
                             moveFocusToContent(TvMainRoute.Settings.route)
@@ -1263,7 +1283,7 @@ fun TvMainShell(
                         detailReturnCardFocusRequester = homeDetailReturnCardFocusRequester,
                         firstRowFocusRequester = homeFirstItemFocusRequester,
                         firstRowContainerFocusRequester = homeFirstRowContainerFocusRequester,
-                        shouldRefreshOnResume = { !suppressHomeRefreshAfterDetail },
+                        shouldRefreshOnResume = { !suppressFeedRefreshAfterDetail },
                         onContentUpFallbackChanged = onContentUpFallback,
                     )
                 }
@@ -1291,6 +1311,7 @@ fun TvMainShell(
                 shellComposable(TvMainRoute.Audio.route) {
                     TvLibrariesScreen(
                         onItemClick = openLibraryItemDetail,
+                        onExploreSection = { section, libraryId -> openLibrarySection(section, libraryId, null) },
                         onLibraryCollectionClick = openLibraryCollectionDetail,
                         onUserCollectionClick = openCollectionDetail,
                         onInitialContentFocus = { focusState.closeProfileMenuForContent() },
@@ -1300,6 +1321,7 @@ fun TvMainShell(
                 shellComposable(TvMainRoute.Libraries.route) {
                     TvLibrariesScreen(
                         onItemClick = openLibraryItemDetail,
+                        onExploreSection = { section, libraryId -> openLibrarySection(section, libraryId, null) },
                         onLibraryCollectionClick = openLibraryCollectionDetail,
                         onUserCollectionClick = openCollectionDetail,
                         onInitialContentFocus = { focusState.closeProfileMenuForContent() },
@@ -1324,6 +1346,7 @@ fun TvMainShell(
                         },
                         onLibraryCollectionClick = openLibraryCollectionDetail,
                         onUserCollectionClick = openCollectionDetail,
+                        onExploreSection = openLibrarySection,
                         onInitialContentFocus = { focusState.closeProfileMenuForContent() },
                         onContentUpFallbackChanged = onContentUpFallback,
                         onPlayShuffle = onPlayShuffle,
@@ -1342,6 +1365,7 @@ fun TvMainShell(
                         },
                         onLibraryCollectionClick = openLibraryCollectionDetail,
                         onUserCollectionClick = openCollectionDetail,
+                        onExploreSection = openLibrarySection,
                         onInitialContentFocus = { focusState.closeProfileMenuForContent() },
                         onContentUpFallbackChanged = onContentUpFallback,
                         onPlayShuffle = onPlayShuffle,
@@ -1360,6 +1384,7 @@ fun TvMainShell(
                         },
                         onLibraryCollectionClick = openLibraryCollectionDetail,
                         onUserCollectionClick = openCollectionDetail,
+                        onExploreSection = openLibrarySection,
                         onInitialContentFocus = { focusState.closeProfileMenuForContent() },
                         onContentUpFallbackChanged = onContentUpFallback,
                         onPlayShuffle = onPlayShuffle,
@@ -1378,6 +1403,7 @@ fun TvMainShell(
                         },
                         onLibraryCollectionClick = openLibraryCollectionDetail,
                         onUserCollectionClick = openCollectionDetail,
+                        onExploreSection = openLibrarySection,
                         onInitialContentFocus = { focusState.closeProfileMenuForContent() },
                         onContentUpFallbackChanged = onContentUpFallback,
                         onPlayShuffle = onPlayShuffle,
@@ -1393,6 +1419,7 @@ fun TvMainShell(
                         detailReturnCardFocusRequester = forYouDetailReturnCardFocusRequester,
                         firstRowFocusRequester = forYouFirstItemFocusRequester,
                         firstRowContainerFocusRequester = forYouFirstRowContainerFocusRequester,
+                        shouldRefreshOnResume = { !suppressFeedRefreshAfterDetail },
                         onContentUpFallbackChanged = onContentUpFallback,
                         entryRequest = forYouEntryRequest,
                     )
@@ -1776,6 +1803,7 @@ private fun TvLibraryTypeContent(
         libraryType: String,
     ) -> Unit,
     onUserCollectionClick: (collectionId: String, title: String) -> Unit,
+    onExploreSection: (org.siloserver.silo.model.section.ResolvedSection, Int, String?) -> Unit,
     onInitialContentFocus: () -> Unit,
     onContentUpFallbackChanged: ((((Boolean) -> Boolean)?) -> Unit)? = null,
     onPlayShuffle: (shuffle: org.siloserver.silo.model.shuffle.Shuffle, libraryId: Int?) -> Unit = { _, _ -> },
@@ -1822,6 +1850,7 @@ private fun TvLibraryTypeContent(
                     onLibraryCollectionClick(library.id, collectionId, title, library.type)
                 }
             },
+            onExploreSection = { section -> onExploreSection(section, library.id, type.mediaScope(library)) },
             onInitialContentFocus = onInitialContentFocus,
             initialSection = selectedPill.toLibraryTab(),
             sectionRequestNonce = sectionRequestNonce,

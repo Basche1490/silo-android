@@ -26,14 +26,15 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Bedtime
 import androidx.compose.material.icons.rounded.Groups
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -55,10 +56,13 @@ import androidx.compose.ui.res.stringResource
 import org.siloserver.silo.android.R
 import org.siloserver.silo.common.player.NoticeTone
 import org.siloserver.silo.common.player.PlayerNotice
-import org.siloserver.silo.common.player.SessionState
 import org.siloserver.silo.common.player.SleepTimerState
+import org.siloserver.silo.domain.player.BufferingQualityNotice
+import org.siloserver.silo.domain.player.BufferingQualityPill
+import org.siloserver.silo.model.playback.PLAYBACK_QUALITY_AUTO
 import org.siloserver.silo.model.playback.PlaybackQualityOption
 import org.siloserver.silo.model.playback.playbackQualityMenu
+import org.siloserver.silo.model.playback.playbackQualityValueLabel
 import org.siloserver.silo.model.watchtogether.MemberRole
 import org.siloserver.silo.model.watchtogether.RoomSnapshot
 import org.siloserver.silo.watchtogether.RoomTransportIntent
@@ -89,6 +93,12 @@ fun PlayerOverlay(
     // The party's current status line (waiting, catching up, host away,
     // reconnecting); null shows the member count.
     roomStatus: String? = null,
+    // This member's unanswered room seek target: skips start from it and the
+    // timeline holds on it until the room's command lands.
+    roomPendingSeekSeconds: Double? = null,
+    // Where a room skip starts from the live position, read at press time:
+    // the pending room seek target, else the position itself.
+    roomSeekOrigin: (Double) -> Double = { it },
     isFastForwardHoldActive: Boolean = false,
     orientationLockSupported: Boolean = true,
     alwaysShowControls: Boolean = false,
@@ -97,7 +107,9 @@ fun PlayerOverlay(
     onNextUpVideoBoundsChanged: (Rect) -> Unit,
     brightnessFraction: Float,
     onSetBrightness: (Float) -> Unit,
-    showBufferingIndicator: Boolean = true,
+    // The loading spinner is up (PlayerScreen owns its timing). It fills the
+    // play disc while the controls show and stands alone while they don't.
+    spinnerVisible: Boolean = false,
     onBack: () -> Unit,
     onPlayPause: () -> Unit,
     onSeek: (Double) -> Unit,
@@ -158,6 +170,7 @@ fun PlayerOverlay(
     // In a party, Back opens the party panel (PlayerScreen); solo backs out.
     val handleBack: () -> Unit = onBack
     val gatedSeek: (Double) -> Unit = { pos -> if (seekEnabled) onSeek(pos) }
+    val shownPosition = roomPendingSeekSeconds?.takeIf { inRoom } ?: state.position
     // Resolved profile-wide video intervals; read at press time so a change
     // made in settings applies to the next skip without restarting playback.
     val seekIntervals by viewModel.seekIntervals.collectAsState()
@@ -165,8 +178,10 @@ fun PlayerOverlay(
         if (seekEnabled) {
             val step = viewModel.seekIntervals.value.forwardSeconds.toDouble()
             if (inRoom) {
-                val forward = state.position + step
-                gatedSeek(if (state.duration > 0.0) forward.coerceAtMost(state.duration) else forward)
+                // Read at press time: a second skip before the composition
+                // shows the first one's target must still build on it.
+                val live = viewModel.uiState.value
+                gatedSeek(roomSkipTarget(roomSeekOrigin(live.position), step, live.duration))
             } else {
                 viewModel.onSkipBy(step)
             }
@@ -175,8 +190,12 @@ fun PlayerOverlay(
     val gatedSkipBackward: () -> Unit = {
         if (seekEnabled) {
             val step = viewModel.seekIntervals.value.backSeconds.toDouble()
-            if (inRoom) gatedSeek((state.position - step).coerceAtLeast(0.0))
-            else viewModel.onSkipBy(-step)
+            if (inRoom) {
+                val live = viewModel.uiState.value
+                gatedSeek(roomSkipTarget(roomSeekOrigin(live.position), -step, live.duration))
+            } else {
+                viewModel.onSkipBy(-step)
+            }
         }
     }
     val gatedPlayPause: () -> Unit = { if (playPauseEnabled) onPlayPause() }
@@ -191,6 +210,7 @@ fun PlayerOverlay(
     val context = LocalContext.current
 
     val introSkipState by viewModel.introSkipState.collectAsState()
+    val trickplayThumbnail by viewModel.trickplayThumbnail.collectAsState()
     val introSkipCountdownRun by viewModel.introSkipCountdownRun.collectAsState()
     val introSkipTimerRunning by viewModel.introSkipTimerRunning.collectAsState()
     // Back while the pill is up dismisses it and is consumed; a second Back
@@ -198,12 +218,34 @@ fun PlayerOverlay(
     // disabled. The player has no other BackHandler of its own — sheets live in
     // their own dialog windows, so an open sheet's Back never reaches here.
     BackHandler(enabled = introSkipState.isVisible && introPillAllowed) { viewModel.onDismissIntroPrompt() }
+    val bufferingPill by viewModel.bufferingPill.collectAsState()
+    val bufferingCountdownRun by viewModel.bufferingCountdownRun.collectAsState()
+    val bufferingTimerRunning by viewModel.bufferingTimerRunning.collectAsState()
+    val bufferingNoticeKind by viewModel.bufferingNotice.collectAsState()
+    // Hidden under Next Up, as the intro pill is.
+    val bufferingPillShown = bufferingPill.isVisible && !state.showUpNext
+    // Back on a buffering pill is consumed: Keep quality on the prompt, hide
+    // on the undo. The controller holds its pill while the intro pill shows;
+    // should both still be up, the intro pill takes Back.
+    BackHandler(enabled = bufferingPillShown && !(introSkipState.isVisible && introPillAllowed)) {
+        viewModel.onBufferingBack()
+    }
+    val bufferingNotice = bufferingNoticeKind?.let { kind ->
+        PlayerNotice(
+            stringResource(
+                when (kind) {
+                    BufferingQualityNotice.LOWERED -> R.string.buffering_quality_lowered
+                    BufferingQualityNotice.CANT_LOWER -> R.string.buffering_quality_cant_lower
+                },
+            ),
+            NoticeTone.Info,
+        )
+    }
     val sleepTimerState by viewModel.sleepTimerState.collectAsState()
     val sleepTimerDefault by viewModel.sleepTimerDefaultMinutes.collectAsState()
     val videoGravity by viewModel.videoGravity.collectAsState()
     val playbackSpeed by viewModel.playbackSpeed.collectAsState()
     val notice by viewModel.notice.collectAsState()
-    val sessionState by viewModel.sessionState.collectAsState()
     val subtitleTools by viewModel.subtitleTools.collectAsState()
     val subtitleSync by viewModel.subtitleSyncState.collectAsState()
     val subtitleSyncNotice by viewModel.subtitleSyncNotice.collectAsState()
@@ -251,6 +293,11 @@ fun PlayerOverlay(
             aiFailureNotice = null
         }
     }
+    // The buffering notice waits while this one holds the slot, so it keeps
+    // its full time for when it can show.
+    val aiFailureNoticeShown = aiFailureNotice != null
+    SideEffect { viewModel.onAiFailureNoticeChanged(aiFailureNoticeShown) }
+    DisposableEffect(viewModel) { onDispose { viewModel.onAiFailureNoticeChanged(false) } }
 
     // Lazy one-shot AI status probe on first TracksSheet open (web parity).
     LaunchedEffect(tracksSheetVisible) {
@@ -283,7 +330,8 @@ fun PlayerOverlay(
         ) {
         // Gesture layer stays out of the tree while controls are visible so
         // full-screen pointer handlers cannot consume taps meant for buttons.
-        if (!alwaysShowControls && !state.showControls && !state.showUpNext) {
+        // Nothing to toggle or skip until the item's first frame.
+        if (!alwaysShowControls && !state.showControls && !state.showUpNext && !state.awaitingFirstFrame) {
             PlayerGestureHandler(
                 onToggleControls = onToggleControls,
                 onSkipForward = gatedSkipForward,
@@ -302,19 +350,13 @@ fun PlayerOverlay(
             )
         }
 
-        // Buffering indicator. Shown during ExoPlayer buffering AND during outage
-        // recovery — the lifecycle's Reconnecting state isn't visible to the player,
-        // so we surface the spinner ourselves so the screen doesn't appear frozen.
-        if (showBufferingIndicator &&
-            (state.isBuffering || sessionState is SessionState.Reconnecting)
-        ) {
-            CircularProgressIndicator(
-                modifier = Modifier
-                    .size(56.dp)
-                    .align(Alignment.Center),
-                color = PlayerChrome.Paper,
-                strokeWidth = 3.dp,
-            )
+        // The first load shows only the spinner; the controls arrive with the
+        // item's first frame.
+        val controlsShown = (alwaysShowControls || state.showControls) && !state.showUpNext && !menuDocked &&
+            !state.awaitingFirstFrame
+        // Up Next draws the spinner in its own video frame.
+        if (spinnerVisible && !controlsShown && !state.showUpNext) {
+            PlayerLoadingSpinner(modifier = Modifier.align(Alignment.Center))
         }
 
         AnimatedVisibility(
@@ -336,15 +378,30 @@ fun PlayerOverlay(
         // server-reconnecting / suspend warnings as a transient toast. Stacks above the
         // buffering spinner; fine to obscure briefly during Reconnecting (the spinner is
         // a redundant signal at that point).
+        // While the buffering pill shows, the anchor rises above the controls so
+        // the pill stays tappable, and drops below the top bar so it covers no
+        // control (the sleep timer chip's rule).
+        val noticeBelowTopBar = bufferingPillShown &&
+            (alwaysShowControls || state.showControls) && !state.showUpNext && !menuDocked
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .windowInsetsPadding(WindowInsets.safeDrawing)
-                .padding(top = 16.dp, start = 16.dp),
+                .padding(top = if (noticeBelowTopBar) 72.dp else 16.dp, start = 16.dp)
+                .zIndex(if (bufferingPillShown) 9f else 0f),
             contentAlignment = Alignment.TopStart,
         ) {
-            // A session notice (reconnecting, suspended) outranks an AI failure.
-            PlayerNoticeOverlay(notice = notice ?: aiFailureNotice)
+            // A session notice (reconnecting, suspended) outranks an AI failure,
+            // and both outrank a buffering notice.
+            PlayerNoticeOverlay(
+                notice = notice ?: aiFailureNotice ?: bufferingNotice,
+                bufferingPill = if (bufferingPillShown) bufferingPill else BufferingQualityPill.Hidden,
+                bufferingCountdownRun = bufferingCountdownRun,
+                bufferingTimerRunning = bufferingTimerRunning,
+                onBufferingLower = viewModel::onBufferingLower,
+                onBufferingKeep = viewModel::onBufferingKeep,
+                onBufferingRestore = viewModel::onBufferingRestore,
+            )
         }
 
         // Subtitle sync card (top-right, below the top bar's actions): follows
@@ -420,7 +477,7 @@ fun PlayerOverlay(
 
         // Transport controls (shown/hidden with animation)
         AnimatedVisibility(
-            visible = (alwaysShowControls || state.showControls) && !state.showUpNext && !menuDocked,
+            visible = controlsShown,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier
@@ -432,13 +489,14 @@ fun PlayerOverlay(
                 subtitle = state.subtitle,
                 eyebrow = playerEyebrow(state),
                 tracksValue = playerTracksValue(state),
-                chapterValue = chapterTitleAt(state.chapters, state.position),
-                qualityValue = playerQualityLabel(qualityOptions, activeQualityId),
+                chapterValue = chapterTitleAt(state.chapters, shownPosition),
+                qualityValue = playbackQualityValueLabel(qualityOptions, activeQualityId, state.qualityPreference),
                 pictureInPictureAvailable = pictureInPictureAvailable,
                 onEnterPictureInPicture = onEnterPictureInPicture,
                 isPlaying = state.isPlaying,
                 isPaused = state.isPaused,
-                position = state.position,
+                isLoading = spinnerVisible,
+                position = shownPosition,
                 duration = state.duration,
                 bufferedPosition = state.bufferedPosition,
                 chapters = state.chapters,
@@ -483,6 +541,8 @@ fun PlayerOverlay(
                 onPlayNextEpisode = viewModel::playUpNextNow,
                 onSetBrightness = onSetBrightness,
                 onScrubbingChange = viewModel::onScrubbingChanged,
+                scrubThumbnail = trickplayThumbnail,
+                onScrubTarget = viewModel::showTrickplay,
                 castSlot = castSlot,
             )
         }
@@ -565,6 +625,7 @@ fun PlayerOverlay(
                 nextEpisode = state.nextEpisode
                     ?: retainedUpNextInfo.takeUnless { state.showUpNext && state.shuffle != null },
                 onVideoBoundsChanged = onNextUpVideoBoundsChanged,
+                spinnerVisible = spinnerVisible,
                 onDeckItems = state.onDeckItems,
                 videoEnded = state.upNextVideoEnded,
                 countdownSeconds = state.upNextCountdownSeconds,
@@ -690,6 +751,9 @@ fun PlayerOverlay(
             PlaybackQualitySheet(
                 options = qualityOptions,
                 activeId = activeQualityId,
+                // A learned limit holds this Auto plan down.
+                autoLimitedAfterBuffering = state.playbackPlan?.bandwidthLimit != null &&
+                    activeQualityId == PLAYBACK_QUALITY_AUTO,
                 inRoom = inRoom,
                 onSelect = viewModel::onSelectQuality,
                 onDismiss = { qualitySheetVisible = false },
@@ -728,7 +792,7 @@ fun PlayerOverlay(
             // A party hides speed (session-only 1x) and the version picker.
             showPlaybackSpeed = !inRoom,
             showQuality = hasQualityMenu,
-            qualityLabel = playerQualityLabel(qualityOptions, activeQualityId),
+            qualityLabel = playbackQualityValueLabel(qualityOptions, activeQualityId, state.qualityPreference),
             onOpenQuality = {
                 settingsSheetVisible = false
                 qualitySheetVisible = true
@@ -764,6 +828,7 @@ fun PlayerOverlay(
             audioDelayEnabled = state.playbackPlan?.claims?.audio?.passthrough != true,
             onSetAudioDelay = viewModel::onSetAudioDelay,
             subtitleDelayMs = viewModel.subtitleDelayMs.collectAsState().value,
+            subtitleDelaySavedToProfile = viewModel.subtitleDelaySavedToProfile.collectAsState().value,
             onSetSubtitleDelay = viewModel::onSetSubtitleDelay,
             sleepTimerState = sleepTimerState,
             tabletopPaneHeight = tabletopPaneHeight,
@@ -938,9 +1003,6 @@ internal fun mobileVideoGravityLabel(value: String): String = when (value) {
  * and tracks sheets show when opened, so the menu can state the current pick
  * without the user having to open anything.
  */
-internal fun playerQualityLabel(options: List<PlaybackQualityOption>, activeId: String?): String =
-    options.firstOrNull { it.id == activeId }?.name ?: "Auto"
-
 internal fun playerVersionLabel(
     versions: List<org.siloserver.silo.model.catalog.FileVersion>,
     selectedIndex: Int,

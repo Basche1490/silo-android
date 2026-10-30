@@ -70,6 +70,7 @@ val repositoryModule = module {
             identityTransitions = get(),
             catalogCache = getOrNull<org.siloserver.silo.repository.port.CatalogCachePort>()
                 ?: org.siloserver.silo.repository.port.NoOpCatalogCachePort,
+            artwork = get(),
         )
     }
     single { CalendarRepository(get()) }
@@ -111,9 +112,10 @@ val repositoryModule = module {
             sectionApi = get(),
             catalogCache = getOrNull<org.siloserver.silo.repository.port.CatalogCachePort>()
                 ?: org.siloserver.silo.repository.port.NoOpCatalogCachePort,
+            artwork = get(),
         )
     }
-    single { RecommendationRepository(get()) }
+    single { RecommendationRepository(get(), get()) }
     single {
         RequestsRepository(
             api = get(),
@@ -142,7 +144,8 @@ val repositoryModule = module {
         )
     }
     single { LibraryPlaybackPrefsRepository(get()) }
-    single { DownloadsRepository(get(), getOrNull<org.siloserver.silo.repository.port.DownloadDeletionPort>() ?: org.siloserver.silo.repository.port.NoOpDownloadDeletionPort, get(), get(), get()) }
+    single { DownloadsRepository(get(), getOrNull<org.siloserver.silo.repository.port.DownloadDeletionPort>() ?: org.siloserver.silo.repository.port.NoOpDownloadDeletionPort, get(), get(), get(),
+        getOrNull<org.siloserver.silo.repository.port.RevokedDownloadCleanupPort>() ?: org.siloserver.silo.repository.port.NoLocalDownloadCopies) }
     single { EbookReaderRepository(get(), get()) }
     single { SubtitlesRepository(get(), get(), get()) }
     single { PushRegistrationRepository(get()) }

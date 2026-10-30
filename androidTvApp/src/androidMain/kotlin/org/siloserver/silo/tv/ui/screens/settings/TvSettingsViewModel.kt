@@ -17,6 +17,7 @@ import org.siloserver.silo.common.settings.SeekIntervalStore
 import org.siloserver.silo.common.player.AudiobookSettingsStore
 import org.siloserver.silo.model.settings.CardPresentation
 import org.siloserver.silo.model.auth.User
+import org.siloserver.silo.domain.player.BufferingQualityMode
 import org.siloserver.silo.domain.player.IntroSkipMode
 import org.siloserver.silo.domain.settings.ProfileSettingsController
 import org.siloserver.silo.model.settings.QualityPresets
@@ -29,7 +30,11 @@ import org.siloserver.silo.network.ServerRegistry
 import org.siloserver.silo.common.ui.components.ProfileAvatarRef
 import org.siloserver.silo.common.ui.components.avatarRef
 import org.siloserver.silo.network.TokenManager
+import org.siloserver.silo.network.apiv2.PlaybackLearnedLimitV2
 import org.siloserver.silo.repository.AuthRepository
+import org.siloserver.silo.repository.PlaybackConnectionRepository
+import org.siloserver.silo.common.player.probe.BandwidthProbeScheduler
+import org.siloserver.silo.common.settings.ConnectionSpeedSettingsModel
 import org.siloserver.silo.repository.ProfileRepository
 import org.siloserver.silo.tv.data.preferences.LegacyTvPrefsMigration
 import org.siloserver.silo.common.profiles.ProfileLaunchBehavior
@@ -75,6 +80,8 @@ class TvSettingsViewModel(
     audiobookSettingsStore: AudiobookSettingsStore? = null,
     private val profileLaunchPreferences: ProfileLaunchPreferences? = null,
     private val watchNextSeeder: WatchNextSeeder? = null,
+    private val playbackConnection: PlaybackConnectionRepository? = null,
+    bandwidthProbe: BandwidthProbeScheduler? = null,
 ) : ViewModel() {
 
     /**
@@ -88,6 +95,14 @@ class TvSettingsViewModel(
         } else {
             null
         }
+
+    /**
+     * Playback → Connection: the measured speed, **Test speed** and Auto's
+     * budget. Null without the probe; hidden unless the server measures speed.
+     */
+    val connectionSpeed: ConnectionSpeedSettingsModel? = bandwidthProbe?.let { probe ->
+        playbackConnection?.let { connection -> ConnectionSpeedSettingsModel(probe, connection, viewModelScope) }
+    }
 
     enum class NavAction { SIGNED_OUT, SWITCH_PROFILE }
 
@@ -129,6 +144,18 @@ class TvSettingsViewModel(
         val subtitleTextOpacitySupported: Boolean = true,
         val autoPlayNext: Boolean = true,
         val introSkipMode: IntroSkipMode = IntroSkipMode.Default,
+        val bufferingQualityMode: BufferingQualityMode = BufferingQualityMode.Default,
+        /** The server's settings manifest is known to define the buffering mode: its row shows only then. */
+        val bufferingQualityModeSupported: Boolean = false,
+        /**
+         * The limit the server learned for this device on this connection
+         * after buffering, or null when there is none or the server does not
+         * advertise the feature. Read with the connection
+         * ([ConnectionSpeedSettingsModel]).
+         */
+        val learnedLimit: PlaybackLearnedLimitV2? = null,
+        /** True after a reset the server did not confirm, until the next attempt. */
+        val learnedLimitResetFailed: Boolean = false,
         val matchContentFrameRate: Boolean = false,
         val dolbyVisionEnabled: Boolean = true,
         val showAudiobooksTab: Boolean = false,
@@ -174,6 +201,9 @@ class TvSettingsViewModel(
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
+    /** A second Reset press while the first is in flight is ignored. */
+    private var learnedLimitResetInFlight = false
+
     init {
         loadUser()
         loadSettings()
@@ -181,6 +211,16 @@ class TvSettingsViewModel(
         observeCardPresentation()
         observeEpisodeSpoilers()
         observeProfileLaunch()
+        observeLearnedLimit()
+    }
+
+    private fun observeLearnedLimit() {
+        val model = connectionSpeed ?: return
+        viewModelScope.launch {
+            model.settings.collect { settings ->
+                _uiState.update { it.copy(learnedLimit = settings?.connection?.learnedLimit) }
+            }
+        }
     }
 
     private fun observeProfileLaunch() {
@@ -361,7 +401,8 @@ class TvSettingsViewModel(
                 playerSettingsStore.autoPlayNextFlow,
                 playerSettingsStore.introSkipModeFlow,
                 playerSettingsStore.autoSkipCreditsFlow,
-                playerSettingsStore.savedCustomSubtitleAppearanceFlow,
+                // The appearance in effect: edits start from what is on screen.
+                playerSettingsStore.subtitleAppearanceFlow,
                 playerSettingsStore.audioLanguageFlow,
                 playerSettingsStore.resumeRewindSecondsFlow,
                 playerSettingsStore.passOutThresholdFlow,
@@ -406,6 +447,16 @@ class TvSettingsViewModel(
         viewModelScope.launch {
             playerSettingsStore.nextUpPromptSecondsFlow.collect { seconds ->
                 _uiState.update { it.copy(nextUpPromptSeconds = seconds) }
+            }
+        }
+        viewModelScope.launch {
+            playerSettingsStore.bufferingQualityModeFlow.collect { mode ->
+                _uiState.update { it.copy(bufferingQualityMode = mode) }
+            }
+        }
+        viewModelScope.launch {
+            playerSettingsStore.bufferingQualityModeSupportedFlow.collect { supported ->
+                _uiState.update { it.copy(bufferingQualityModeSupported = supported) }
             }
         }
         viewModelScope.launch {
@@ -548,15 +599,14 @@ class TvSettingsViewModel(
             .ifBlank { url }
     }
 
-    /**
-     * Applies one quality preset — the two axes it decomposes into. The
-     * compound legacy spellings ("1080p-high") are never written.
-     */
-    fun onQualityPresetSelected(presetId: String) {
-        val preset = QualityPresets.byId(presetId) ?: return
-        viewModelScope.launch {
-            playerSettingsStore.setQuality(preset.resolution, preset.bitrateKbps)
-        }
+    /** The resolution ceiling, independent of the bitrate. */
+    fun onResolutionSelected(resolution: String) {
+        viewModelScope.launch { playerSettingsStore.setPreferredQuality(resolution) }
+    }
+
+    /** The bitrate ceiling, independent of the resolution; null is no limit. */
+    fun onMaxBitrateSelected(kbps: Int?) {
+        viewModelScope.launch { playerSettingsStore.setMaxBitrateKbps(kbps) }
     }
 
     // The four profile preferences below are canonical settings written at
@@ -640,7 +690,8 @@ class TvSettingsViewModel(
         editAppearance { it.copy(fontSize = value.toFontSizePreset()) }
 
     /**
-     * Commit a full subtitle-appearance value (device-scoped). The Appearance
+     * Commit a full subtitle-appearance value (the profile's, unless "Only on
+     * This Device" is on). The Appearance
      * picker rows build [next] by copying the current appearance and changing
      * one field, mirroring the tvOS bindings. The store debounces the server
      * write and re-emits on [subtitleAppearanceFlow], which the combine folds
@@ -694,7 +745,7 @@ class TvSettingsViewModel(
         }
     }
 
-    /** Toggle the device-level subtitle-appearance override (Custom Appearance). */
+    /** "Only on This Device": keep this TV's own subtitle appearance and timing. */
     fun setSubtitleDeviceOverrideEnabled(enabled: Boolean) {
         viewModelScope.launch { playerSettingsStore.setSubtitleDeviceOverrideEnabled(enabled) }
     }
@@ -762,6 +813,33 @@ class TvSettingsViewModel(
 
     fun onIntroSkipModeChanged(value: IntroSkipMode) {
         viewModelScope.launch { playerSettingsStore.setIntroSkipMode(value) }
+    }
+
+    fun onBufferingQualityModeChanged(value: BufferingQualityMode) {
+        viewModelScope.launch { playerSettingsStore.setBufferingQualityMode(value) }
+    }
+
+    /**
+     * Forgets the learned limit, then reads the connection again so the row
+     * goes and the Connection group's Auto budget, which the limit capped,
+     * catches up.
+     */
+    fun onResetLearnedLimit() {
+        val repository = playbackConnection ?: return
+        if (learnedLimitResetInFlight) return
+        learnedLimitResetInFlight = true
+        _uiState.update { it.copy(learnedLimitResetFailed = false) }
+        viewModelScope.launch {
+            try {
+                if (repository.resetLearnedLimit() is ApiResult.Success) {
+                    connectionSpeed?.read()
+                } else {
+                    _uiState.update { it.copy(learnedLimitResetFailed = true) }
+                }
+            } finally {
+                learnedLimitResetInFlight = false
+            }
+        }
     }
 
     fun onAutoSkipCreditsChanged(value: Boolean) {

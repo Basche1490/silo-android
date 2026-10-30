@@ -73,6 +73,37 @@ class SiloTvApplication : Application(), Configuration.Provider, SingletonImageL
         }.onFailure {
             android.util.Log.w("SiloTvApplication", "WorkManager.initialize failed (already initialised?)", it)
         }
+        // Use the active server's local address at home (LocalRouteController).
+        // Guarded — without it every request stays on the saved address.
+        runCatching {
+            org.siloserver.silo.common.network.LocalRouteStarter.create(
+                context = this@SiloTvApplication,
+                registry = koinApp.koin.get(),
+                tokenManager = koinApp.koin.get(),
+            ).start(androidx.lifecycle.ProcessLifecycleOwner.get().lifecycle)
+        }.onFailure {
+            android.util.Log.w("SiloTvApplication", "Local route starter init failed", it)
+        }
+        // Measure the connection in the background after sign-in and each
+        // return to the foreground, for Auto quality and Settings. Guarded —
+        // without it playback sends no estimate.
+        runCatching {
+            koinApp.koin.get<org.siloserver.silo.common.player.probe.BandwidthProbeScheduler>()
+                .start(androidx.lifecycle.ProcessLifecycleOwner.get().lifecycle)
+        }.onFailure {
+            android.util.Log.w("SiloTvApplication", "Bandwidth probe scheduler init failed: ${it::class.simpleName}")
+        }
+        // Send the playback telemetry an earlier launch left unsent: route
+        // events whose send failed on the network. Off the main thread.
+        // Guarded — never load-bearing for cold start.
+        runCatching {
+            org.siloserver.silo.common.player.RouteEventReplayStarter(
+                registry = koinApp.koin.get(),
+                playback = koinApp.koin.get(),
+            ).start()
+        }.onFailure {
+            android.util.Log.w("SiloTvApplication", "Route event replay starter init failed: ${it::class.simpleName}")
+        }
         // Drain the user-state outbox (Track B) on launch + when connectivity
         // returns. Guarded — never load-bearing for cold start.
         runCatching {

@@ -990,6 +990,8 @@ private const val ChromeFadeDistanceDp = 80f
 fun LibrariesScreen(
     onItemClick: (String, Int?) -> Unit,
     onCollectionClick: (LibraryCollection, Int, String?) -> Unit,
+    /** Opens a Recommended row's full page: the row, its library, and the Movies/Series scope. */
+    onExploreSection: ((ResolvedSection, Int, String?) -> Unit)? = null,
     viewModel: LibrariesViewModel,
     activeProfile: Profile?,
     onLibrarySelectorClick: () -> Unit,
@@ -1118,6 +1120,9 @@ fun LibrariesScreen(
                             topInset = topInset,
                             onItemClick = { onItemClick(it, state.selectedLibraryId) },
                             onRetry = viewModel::retryCurrentTab,
+                            onExploreSection = state.selectedLibraryId?.let { libraryId ->
+                                onExploreSection?.let { open -> { section -> open(section, libraryId, state.mediaScope) } }
+                            },
                         )
                     }
                     state.selectedTab == LibrariesSubtab.Browse -> {
@@ -1193,6 +1198,7 @@ private fun RecommendedTabContent(
     topInset: Dp,
     onItemClick: (String) -> Unit,
     onRetry: () -> Unit,
+    onExploreSection: ((ResolvedSection) -> Unit)? = null,
 ) {
     val diagnosticsListSnapshot = remember(state.sections) {
         DiagnosticsListSnapshot.fromKeys(
@@ -1255,11 +1261,10 @@ private fun RecommendedTabContent(
                     items = state.sections,
                     key = { section -> section.id },
                 ) { section ->
-                    // No "See All" — iOS has no such affordance (H3, Jim
-                    // 2026-07-10); the row omits it when onSeeAllClick is null.
                     HomeSectionRow(
                         section = section,
                         onItemClick = onItemClick,
+                        onExploreAllClick = onExploreSection?.let { open -> { open(section) } },
                     )
                 }
 
@@ -1522,9 +1527,7 @@ private fun InlineLibraryCollectionCard(
     // iOS `LibraryCollectionCard`: VStack(spacing: 6) of a 2:3.3 poster
     // (smallCornerRadius = 6) carrying a bottom-trailing count badge, a
     // siloCaption (12) name (2 lines), and a siloSmall (11) secondary
-    // type label. The two text lines follow the caption preference
-    // (showsTitle / showsMetadata); the count badge rides the artwork.
-    val caption = LocalCardPresentation.current.caption
+    // type label; the count badge rides the artwork.
     Column(
         modifier = Modifier.clickable(onClick = onClick),
         verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -1555,24 +1558,20 @@ private fun InlineLibraryCollectionCard(
                     .padding(horizontal = 8.dp, vertical = 5.dp),
             )
         }
-        if (caption.showsTitle) {
-            Text(
-                text = collection.name,
-                fontSize = 12.sp,
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        if (caption.showsMetadata) {
-            Text(
-                text = if (showItemCount) collection.itemCount?.let { "$it items" } ?: "Collection" else "Collection",
-                fontSize = 12.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
+        Text(
+            text = collection.name,
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            text = if (showItemCount) collection.itemCount?.let { "$it items" } ?: "Collection" else "Collection",
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 
@@ -1741,27 +1740,28 @@ fun LibrariesSelectorSheet(
         contentColor = MaterialTheme.colorScheme.onSurface,
     ) {
         // iOS `LibraryPickerSheet`: a large "Libraries" navigation title above a
-        // VStack(spacing: 8) of rows, with h/v padding = padding (16).
-        Column(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp),
+        // ScrollView of VStack(spacing: 8) rows, with h/v padding = padding (16).
+        // The title stays put and the rows scroll, so every library is reachable
+        // when the list is taller than the screen.
+        Text(
+            text = "Libraries",
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(start = 16.dp, top = 16.dp, end = 16.dp),
+        )
+        Spacer(modifier = Modifier.height(24.dp))
+
+        LazyColumn(
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 48.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text(
-                text = "Libraries",
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Bold,
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-
-            libraries.forEach { library ->
+            items(libraries, key = { it.id }) { library ->
                 LibrarySelectorRow(
                     library = library,
                     isSelected = library.id == selectedLibraryId,
                     onClick = { onSelectLibrary(library.id) },
                 )
             }
-
-            Spacer(modifier = Modifier.height(24.dp))
         }
     }
 }
@@ -1930,7 +1930,7 @@ private fun LibrarySelectorRow(
     }
 }
 
-private fun libraryIcon(type: String): ImageVector = when (type.lowercase()) {
+internal fun libraryIcon(type: String): ImageVector = when (type.lowercase()) {
     "movies", "movie" -> Icons.Default.LocalMovies
     "series", "tv", "shows" -> Icons.Default.Tv
     "audiobook", "audiobooks" -> Icons.Default.Headphones

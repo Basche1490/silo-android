@@ -1,6 +1,8 @@
 package org.siloserver.silo.android.ui.screens.settings
 
 import androidx.annotation.StringRes
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -12,18 +14,24 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import org.siloserver.silo.android.R
+import org.siloserver.silo.common.R as CommonR
 import org.siloserver.silo.android.ui.components.SiloConfirmDialog
 import org.siloserver.silo.common.settings.UseProfileSettingsCopy
+import org.siloserver.silo.common.settings.bufferingQualityModeLabel
+import org.siloserver.silo.common.settings.learnedLimitLabel
+import org.siloserver.silo.domain.player.BufferingQualityMode
 import org.siloserver.silo.domain.player.IntroSkipMode
+import org.siloserver.silo.model.settings.CellularQuality
 import org.siloserver.silo.model.settings.LanguageOptions
 import org.siloserver.silo.model.settings.PlaybackSettingsKeys
+import org.siloserver.silo.model.settings.QualityChoices
 import org.siloserver.silo.model.settings.QualityPresets
 import org.siloserver.silo.model.settings.SettingKeys
+import org.siloserver.silo.network.apiv2.PlaybackLearnedLimitV2
 
-// Quality is two settings behind one picker: playback.preferred_quality (a
-// resolution cap) and playback.max_bitrate_kbps (a bandwidth cap, null =
-// uncapped). The preset table is shared with the TV app and mirrors the web
-// client's, so the same choice reads back with the same label everywhere.
+// Quality is two independent pickers, as on the web: playback.preferred_quality
+// (a resolution cap) and playback.max_bitrate_kbps (a bandwidth cap, null =
+// uncapped). Cellular quality is one preset picker over its own pair.
 
 // Discrete choices for the two behavior settings (0 = off). The label↔value
 // maps below convert.
@@ -53,6 +61,7 @@ private fun ProfileLayeredDropdownRow(
     overridden: Boolean,
     onOptionSelected: (String) -> Unit,
     onUseProfileSetting: () -> Unit,
+    description: String? = null,
 ) {
     SettingsDropdownRow(
         label = label,
@@ -62,6 +71,7 @@ private fun ProfileLayeredDropdownRow(
         onOptionSelected = { option ->
             if (option == UseProfileSettingsCopy.OPTION) onUseProfileSetting() else onOptionSelected(option)
         },
+        description = description,
     )
 }
 
@@ -72,7 +82,7 @@ private fun ProfileLayeredDropdownRow(
  * "Use Profile Default" does.
  */
 @Composable
-private fun ProfileLayeredSwitchRow(
+internal fun ProfileLayeredSwitchRow(
     label: String,
     checked: Boolean,
     overridden: Boolean,
@@ -91,10 +101,10 @@ private fun ProfileLayeredSwitchRow(
 }
 
 /**
- * Playback → Streaming (Apple `PlaybackSettingsView` "Streaming"): quality,
- * audio language, Dolby Vision, and — where the Apple list ends with
- * Background Playback — Android's picture-in-picture. The footer describes the
- * chosen quality preset.
+ * Playback → Streaming (Apple `PlaybackSettingsView` "Streaming"): resolution,
+ * maximum bitrate, audio language, Dolby Vision, and — where the Apple list
+ * ends with Background Playback — Android's picture-in-picture. The footer
+ * says what the two quality choices do.
  */
 @Composable
 fun PlaybackStreamingSection(
@@ -105,14 +115,24 @@ fun PlaybackStreamingSection(
     dolbyVisionEnabled: Boolean,
     dvProfile7HDR10Fallback: Boolean,
     pictureInPictureEnabled: Boolean,
+    bufferingQualityMode: BufferingQualityMode,
+    /** Whether the server has the setting; without it the row hides and Silo lowers automatically. */
+    bufferingQualityModeSupported: Boolean,
+    /** Shown, with its Reset action, only while the server reports one. */
+    learnedLimit: PlaybackLearnedLimitV2?,
+    learnedLimitResetFailed: Boolean,
     /** Keys this device holds its own value for. */
     deviceOverrides: Set<String>,
-    /** Receives a [QualityPresets] preset id. */
-    onQualityPresetSelected: (String) -> Unit,
+    /** Receives a [QualityChoices.RESOLUTIONS] value. */
+    onResolutionSelected: (String) -> Unit,
+    /** Receives a [QualityChoices.bitrateChoices] value; null is no limit. */
+    onMaxBitrateSelected: (Int?) -> Unit,
     onAudioLanguageChanged: (String) -> Unit,
     onDolbyVisionEnabledChanged: (Boolean) -> Unit,
     onDvProfile7HDR10FallbackChanged: (Boolean) -> Unit,
     onPictureInPictureEnabledChanged: (Boolean) -> Unit,
+    onBufferingQualityModeChanged: (BufferingQualityMode) -> Unit,
+    onResetLearnedLimit: () -> Unit,
     /** Receives the key of the control going back to the profile's value. */
     onUseProfileSetting: (String) -> Unit,
     modifier: Modifier = Modifier,
@@ -126,24 +146,64 @@ fun PlaybackStreamingSection(
             runtimeValues = audioLanguageSuggestions,
         )
     }
-    // A pair no preset covers (set through the API, or left by a legacy
-    // compound value) still gets a truthful label rather than a picker
-    // silently showing the wrong entry.
-    val qualityLabel = QualityPresets.describe(qualityResolution, maxBitrateKbps)
-    val qualityFooter = QualityPresets.presetFor(qualityResolution, maxBitrateKbps)?.description
-        ?: "$qualityLabel."
-    SettingsSection(title = "Streaming", footer = qualityFooter, modifier = modifier) {
+    // A stored cap that is not one of the choices (set through the API or
+    // another client) is listed in its place, so it stays visible and selected.
+    val bitrateChoices = remember(maxBitrateKbps) { QualityChoices.bitrateChoices(maxBitrateKbps) }
+    val bufferingQualityOptions =
+        BufferingQualityMode.entries.map { it to stringResource(bufferingQualityModeLabel(it)) }
+    SettingsSection(
+        title = "Streaming",
+        footer = QualityChoices.description(qualityResolution, maxBitrateKbps),
+        modifier = modifier,
+    ) {
         ProfileLayeredDropdownRow(
-            label = "Quality",
-            value = qualityLabel,
-            options = QualityPresets.ALL.map { it.label },
+            label = "Resolution",
+            value = QualityChoices.resolutionLabel(qualityResolution),
+            options = QualityChoices.RESOLUTIONS.map { it.label },
             overridden = PlaybackSettingsKeys.hasDeviceOverride(deviceOverrides, PlaybackSettingsKeys.PreferredQuality),
             onOptionSelected = { label ->
-                QualityPresets.ALL.firstOrNull { it.label == label }
-                    ?.let { onQualityPresetSelected(it.id) }
+                QualityChoices.RESOLUTIONS.firstOrNull { it.label == label }?.let { onResolutionSelected(it.value) }
             },
             onUseProfileSetting = { onUseProfileSetting(PlaybackSettingsKeys.PreferredQuality) },
         )
+
+        ProfileLayeredDropdownRow(
+            label = "Maximum Bitrate",
+            value = QualityChoices.bitrateLabel(maxBitrateKbps),
+            options = bitrateChoices.map { it.label },
+            overridden = PlaybackSettingsKeys.hasDeviceOverride(deviceOverrides, PlaybackSettingsKeys.MaxBitrateKbps),
+            onOptionSelected = { label ->
+                bitrateChoices.firstOrNull { it.label == label }?.let { onMaxBitrateSelected(it.value) }
+            },
+            onUseProfileSetting = { onUseProfileSetting(PlaybackSettingsKeys.MaxBitrateKbps) },
+        )
+
+        // Next to Maximum Bitrate, the manual cap on Auto it complements. The
+        // copy is the spec's.
+        if (bufferingQualityModeSupported) {
+            ProfileLayeredDropdownRow(
+                label = stringResource(CommonR.string.settings_buffering_quality_title),
+                value = stringResource(bufferingQualityModeLabel(bufferingQualityMode)),
+                options = bufferingQualityOptions.map { it.second },
+                overridden = PlaybackSettingsKeys.hasDeviceOverride(deviceOverrides, PlaybackSettingsKeys.BufferingQualityMode),
+                onOptionSelected = { label ->
+                    bufferingQualityOptions.firstOrNull { it.second == label }?.let { onBufferingQualityModeChanged(it.first) }
+                },
+                onUseProfileSetting = { onUseProfileSetting(PlaybackSettingsKeys.BufferingQualityMode) },
+                description = stringResource(CommonR.string.settings_buffering_quality_description),
+            )
+        }
+
+        if (learnedLimit != null) {
+            SettingsRow(label = learnedLimitLabel(learnedLimit)) {
+                TextButton(onClick = onResetLearnedLimit) {
+                    Text(stringResource(CommonR.string.settings_learned_limit_reset))
+                }
+            }
+            if (learnedLimitResetFailed) {
+                SettingsProse(body = stringResource(CommonR.string.settings_learned_limit_reset_failed))
+            }
+        }
 
         ProfileLayeredDropdownRow(
             label = "Audio Language",
@@ -175,6 +235,40 @@ fun PlaybackStreamingSection(
             label = "Picture-in-Picture",
             checked = pictureInPictureEnabled,
             onCheckedChange = onPictureInPictureEnabledChanged,
+        )
+    }
+}
+
+/**
+ * Playback → Cellular, phone only: the quality used on mobile data and metered
+ * networks, picked as one preset because bitrate is what matters on a data
+ * plan. A stored pair no preset covers is listed under its own label, so it
+ * stays visible and selected.
+ */
+@Composable
+fun PlaybackCellularSection(
+    resolution: String,
+    maxBitrateKbps: Int?,
+    /** Keys this device holds its own value for. */
+    deviceOverrides: Set<String>,
+    /** Receives a [QualityPresets] preset id. */
+    onPresetSelected: (String) -> Unit,
+    /** Receives the key of the control going back to the profile's value. */
+    onUseProfileSetting: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val label = CellularQuality.label(resolution, maxBitrateKbps)
+    val custom = label.takeIf { QualityPresets.presetFor(resolution, maxBitrateKbps) == null }
+    SettingsSection(title = "Cellular", footer = CellularQuality.FOOTER, modifier = modifier) {
+        ProfileLayeredDropdownRow(
+            label = "Cellular Quality",
+            value = label,
+            options = QualityPresets.ALL.map { it.label } + listOfNotNull(custom),
+            overridden = PlaybackSettingsKeys.hasDeviceOverride(deviceOverrides, PlaybackSettingsKeys.CellularPreferredQuality),
+            onOptionSelected = { option ->
+                QualityPresets.ALL.firstOrNull { it.label == option }?.let { onPresetSelected(it.id) }
+            },
+            onUseProfileSetting = { onUseProfileSetting(PlaybackSettingsKeys.CellularPreferredQuality) },
         )
     }
 }

@@ -23,9 +23,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -57,8 +55,10 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
+import androidx.media3.common.C
 import androidx.media3.common.Player
 import org.siloserver.silo.common.player.PlayWhenReadyReconciliationGate
 import org.siloserver.silo.android.ui.components.rememberVideoSeekIntervals
@@ -81,6 +81,7 @@ import org.siloserver.silo.common.player.plannedVideoRouteFor
 import org.siloserver.silo.common.player.PlaybackCapabilityDetector
 import org.siloserver.silo.common.player.PlaybackPreflightListener
 import org.siloserver.silo.common.player.RefreshRateMatcher
+import org.siloserver.silo.common.player.rememberPlayerSpinnerVisible
 import org.siloserver.silo.common.player.SessionState
 import org.siloserver.silo.common.player.SubtitleManager
 import org.siloserver.silo.common.player.videoPlayerViewport
@@ -228,7 +229,8 @@ private fun SubtitleIdentity.requiresMountedMobileSelection(): Boolean =
  * is [PlayerOverlay].
  *
  * @param contentId The content ID to play (passed via navigation argument)
- * @param initialFileId Optional explicit file selection from the detail screen
+ * @param initialFileId Optional file from the detail screen
+ * @param initialVersionChosen The viewer picked [initialFileId]'s version, so the start pins it
  * @param initialQuality Optional explicit playback-quality ceiling from a deep link
  * @param initialAudioTrackIndex Optional explicit audio selection from the detail screen
  * @param initialSubtitleTrackIndex Optional explicit subtitle selection from the detail screen
@@ -241,6 +243,7 @@ fun PlayerScreen(
     contentId: String,
     libraryId: Int? = null,
     initialFileId: Int? = null,
+    initialVersionChosen: Boolean = false,
     initialQuality: String? = null,
     initialAudioTrackIndex: Int? = null,
     initialSubtitleTrackIndex: Int? = null,
@@ -266,6 +269,29 @@ fun PlayerScreen(
     val sessionState by viewModel.sessionState.collectAsState()
     val pictureInPictureEnabled by playerSettingsStore.pictureInPictureEnabledFlow.collectAsState(initial = true)
     val isInPictureInPictureMode by pictureInPictureCoordinator.isInPictureInPictureMode.collectAsState()
+    // Picture in picture and the background show no pills, so a buffering
+    // pill waits there with its timer frozen, as behind a higher-priority pill.
+    DisposableEffect(lifecycleOwner, isInPictureInPictureMode) {
+        fun report() = viewModel.onPlayerViewHiddenChanged(
+            isInPictureInPictureMode ||
+                !lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED),
+        )
+        val observer = LifecycleEventObserver { _, _ -> report() }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    // The activity's stop, not this destination's: closing the player stops
+    // the destination too, and that exit sends the real plan summary itself.
+    DisposableEffect(activity) {
+        val activityLifecycle = (activity as? LifecycleOwner)?.lifecycle
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP && activity?.isChangingConfigurations != true) {
+                viewModel.onAppLeftForeground()
+            }
+        }
+        activityLifecycle?.addObserver(observer)
+        onDispose { activityLifecycle?.removeObserver(observer) }
+    }
     val backendFactory: VideoPlaybackBackendFactory = koinInject()
     val audioCapabilityManager: AudioCapabilityManager = koinInject()
     val capabilityDetector: PlaybackCapabilityDetector = koinInject()
@@ -391,6 +417,10 @@ fun PlayerScreen(
             subtitle = subtitle,
         )
     }
+    // This member's unanswered room seek: skips build on it and the timeline holds on it.
+    val roomPendingSeekSeconds by remember(watchParty) {
+        watchParty?.pendingSeekSeconds ?: MutableStateFlow<Double?>(null)
+    }.collectAsState()
     DisposableEffect(watchParty) {
         watchParty?.start()
         onDispose {
@@ -588,6 +618,11 @@ fun PlayerScreen(
         val party = watchParty ?: return@LaunchedEffect
         viewModel.roomQualityChanges.collect { party.binding.onQualityChanged() }
     }
+    // An in-place audio track switch may change the output path: rate support is measured again.
+    LaunchedEffect(watchParty) {
+        val party = watchParty ?: return@LaunchedEffect
+        viewModel.roomAudioTrackChanges.collect { party.binding.onAudioTrackChanged() }
+    }
 
     // Per-session playback control socket (admin remote control). Bound for the
     // lifetime of a sessionId; the loop reconnects on its own and never
@@ -613,9 +648,15 @@ fun PlayerScreen(
     }
     // A remote "stop"/"terminate" command tears the screen down like a back
     // press. In a party it ends only this device's engagement; the room goes
-    // on (a host's leave starts the two-minute grace).
+    // on (a host's leave starts the two-minute grace). An administrator's stop
+    // also says why, once: a 410 for the same stop arriving after the command
+    // finds the exit already under way. The screen's context keeps the toast
+    // on the display the player is on; text toasts outlive the activity.
     LaunchedEffect(Unit) {
-        viewModel.remoteStopRequests.collect {
+        viewModel.remoteStopRequests.collect { notice ->
+            if (notice != null && !exitRequested) {
+                Toast.makeText(context, notice, Toast.LENGTH_LONG).show()
+            }
             watchParty?.leave()
             exitPlayer()
         }
@@ -651,6 +692,8 @@ fun PlayerScreen(
             playWhenReady = player.playWhenReady,
             isPlaying = player.isPlaying,
             playbackState = player.playbackState,
+            currentItemSeekable = player.isCurrentMediaItemSeekable,
+            playbackSpeed = player.playbackParameters.speed.toDouble(),
         )
     }
     // service. The video PlayerView binds its SurfaceView directly to this (NOT the
@@ -838,7 +881,15 @@ fun PlayerScreen(
     }
 
     // Load content on first composition
-    LaunchedEffect(contentId, initialFileId, initialQuality, initialAudioTrackIndex, initialSubtitleTrackIndex, resumePositionOverride) {
+    LaunchedEffect(
+        contentId,
+        initialFileId,
+        initialVersionChosen,
+        initialQuality,
+        initialAudioTrackIndex,
+        initialSubtitleTrackIndex,
+        resumePositionOverride,
+    ) {
         // A party starts from the room's playback context (above), never from
         // the route, so nothing plays solo first.
         if (inRoom) return@LaunchedEffect
@@ -848,6 +899,7 @@ fun PlayerScreen(
             libraryId = libraryId,
             contentId = contentId,
             preferredFileId = initialFileId,
+            versionChosen = initialVersionChosen,
             preferredQuality = initialQuality,
             initialAudioTrackIndex = initialAudioTrackIndex,
             initialSubtitleTrackIndex = initialSubtitleTrackIndex,
@@ -1000,6 +1052,8 @@ fun PlayerScreen(
             transformations = plan?.executableMedia3ClientTransformations().orEmpty(),
             runtimeCorrections = plan?.runtimeCorrections.orEmpty(),
             activeClaims = plan?.activeOriginalHttpClaims().orEmpty(),
+            // Watch Party playback stays on the saved address.
+            allowsLocalRoute = !inRoom,
         )
         if (!isLocalMedia && uiState.sessionId != null) {
             PlaybackRuntimeCorrectionMetrics.reset()
@@ -1085,8 +1139,12 @@ fun PlayerScreen(
             transformations = plan?.executableMedia3ClientTransformations().orEmpty(),
             runtimeCorrections = plan?.runtimeCorrections.orEmpty(),
             activeClaims = plan?.activeOriginalHttpClaims().orEmpty(),
+            // Watch Party playback stays on the saved address.
+            allowsLocalRoute = !inRoom,
         )
         viewModel.onSubtitleMediaMountChanging()
+        // The same plan, remounted: its coming wait is a reload, not a stall.
+        viewModel.bufferingQualityAdapter.markReload()
         backend.refresh(mediaSpec)
         viewModel.onSubtitleMediaMountApplied(MobileSubtitleMount(uiState.mediaMountGeneration, uiState.subtitleRefreshNonce))
         viewModel.onSubtitleCuesMounted(uiState.subtitleCueRevisions)
@@ -1167,10 +1225,28 @@ fun PlayerScreen(
                     postResumeStallDetector.onFirstFrameRendered()
                     viewModel.onFirstVideoFrameRendered(mountToken)
                 }
+
+                // Audio renders no frame, so a mount with audio and no video
+                // ends its first load when it plays. A video mount waits for
+                // its frame: audio can start ahead of a wedged video decoder.
+                override fun onIsPlayingChanged(eventTime: AnalyticsListener.EventTime, isPlaying: Boolean) {
+                    if (!isPlaying) return
+                    val mountToken = eventTime.videoMountToken() ?: return
+                    val tracks = player.currentTracks
+                    if (tracks.containsType(C.TRACK_TYPE_VIDEO) || !tracks.containsType(C.TRACK_TYPE_AUDIO)) return
+                    viewModel.onAudioOnlyPlaybackStarted(mountToken)
+                }
             }
             player.addAnalyticsListener(listener)
             onDispose { player.removeAnalyticsListener(listener) }
         }
+    }
+
+    // The buffering-quality controller reads the player that renders the plan:
+    // its states for stalls, and its loads for whether data is still arriving.
+    DisposableEffect(sessionPlayer) {
+        val detach = (sessionPlayer as? ExoPlayer)?.let(viewModel.bufferingQualityAdapter::attach)
+        onDispose { detach?.invoke() }
     }
 
     // Player event listener to feed state back to ViewModel + track video size for PiP
@@ -1399,6 +1475,10 @@ fun PlayerScreen(
         lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
             while (isActive) {
                 val decoderCounters = (sessionPlayer as? androidx.media3.exoplayer.ExoPlayer)?.videoDecoderCounters
+                viewModel.bufferingQualityAdapter.sampleBuffer(
+                    nowMs = SystemClock.elapsedRealtime(),
+                    bufferedPositionMs = controller.bufferedPosition.coerceAtLeast(0L),
+                )
                 val reason = startupStallDetector.sample(
                     sessionKey = sessionKey,
                     nowMs = SystemClock.elapsedRealtime(),
@@ -1412,7 +1492,24 @@ fun PlayerScreen(
                     decoderSkippedOutputBufferCount = decoderCounters?.skippedOutputBufferCount ?: 0,
                     decoderDroppedBufferCount = decoderCounters?.droppedBufferCount ?: 0,
                 )
-                if (reason != null) {
+                // A slow plan that is still receiving data belongs to the
+                // buffering-quality controller: no same-plan reopen and no
+                // failure replan, and this loop keeps sampling.
+                if (reason != null &&
+                    viewModel.bufferingQualityAdapter.ownsStartupStall(
+                        reason = reason,
+                        nowMs = SystemClock.elapsedRealtime(),
+                        controllerEnabled = viewModel.bufferingQualityEnabled,
+                    )
+                ) {
+                    Log.i(
+                        TAG,
+                        "startup_stall owned_by=${if (viewModel.bufferingQualityAdapter.transportTroubleActive) "outage" else "buffering_quality"} " +
+                            "classification=${reason.classification} " +
+                            "stalled_for_ms=${reason.stalledForMs}",
+                    )
+                    startupStallDetector.onStallHandedOff(SystemClock.elapsedRealtime())
+                } else if (reason != null) {
                     Log.i(TAG, "Startup stall fallback: $reason")
                     viewModel.onUnsupportedPlayback(reason, uiState.mediaMountGeneration)
                     return@repeatOnLifecycle
@@ -1524,7 +1621,7 @@ fun PlayerScreen(
 
     // Party only: sample the engine often enough that the room sees where
     // the player really is. The display ticker above is too coarse for the
-    // binding's 0.35 s drift decisions and stays as it is.
+    // binding's 0.1-0.4 s drift decisions and stays as it is.
     LaunchedEffect(mediaController, lifecycleOwner, watchParty) {
         val controller = mediaController ?: return@LaunchedEffect
         if (watchParty == null) return@LaunchedEffect
@@ -1640,6 +1737,17 @@ fun PlayerScreen(
         }
     }
 
+    // One spinner for the whole load: the session request (also one that keeps
+    // the old picture up, such as a version switch or Next Up), the player's
+    // first buffer, a rebuffer, and an outage the player itself can't see.
+    // Hoisted here so it carries across the loading branch giving way to the
+    // video.
+    val spinnerVisible = rememberPlayerSpinnerVisible(
+        uiState.isLoading ||
+            uiState.isBuffering ||
+            sessionState is SessionState.Reconnecting,
+    )
+
     // UI
     Box(
         modifier = Modifier
@@ -1657,13 +1765,8 @@ fun PlayerScreen(
             },
     ) {
         if (uiState.isLoading && uiState.streamUrl == null) {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center,
-            ) {
-                androidx.compose.material3.CircularProgressIndicator(
-                    color = MaterialTheme.colorScheme.primary,
-                )
+            if (spinnerVisible) {
+                PlayerLoadingSpinner(modifier = Modifier.align(Alignment.Center))
             }
         } else if (uiState.error != null) {
             Box(
@@ -1868,18 +1971,12 @@ fun PlayerScreen(
             // constrained to the controls pane. Keep playback/reconnection
             // feedback on the video itself instead of showing a spinner below
             // the hinge among the transport controls.
-            if (activeTabletopPaneLayout != null &&
-                (uiState.isBuffering || sessionState is SessionState.Reconnecting)
-            ) {
+            if (activeTabletopPaneLayout != null && spinnerVisible) {
                 Box(
                     modifier = videoSurfaceModifier,
                     contentAlignment = Alignment.Center,
                 ) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(56.dp),
-                        color = Color.White,
-                        strokeWidth = 3.dp,
-                    )
+                    PlayerLoadingSpinner()
                 }
             }
 
@@ -1925,6 +2022,8 @@ fun PlayerScreen(
                         inRoom = inRoom,
                         roomSuspended = roomSuspended,
                         roomStatus = roomStatus,
+                        roomPendingSeekSeconds = roomPendingSeekSeconds,
+                        roomSeekOrigin = { live -> watchParty?.relativeSeekOrigin(live) ?: live },
                         orientationLockSupported =
                             orientationLockSupported && activeTabletopPaneLayout == null,
                         alwaysShowControls = activeTabletopPaneLayout != null,
@@ -1943,7 +2042,7 @@ fun PlayerScreen(
                                 window.attributes = attributes
                             }
                         },
-                        showBufferingIndicator = activeTabletopPaneLayout == null,
+                        spinnerVisible = spinnerVisible && activeTabletopPaneLayout == null,
                         castSlot = { discModifier ->
                             // No Cast in a party (D7).
                             if (!inRoom) {

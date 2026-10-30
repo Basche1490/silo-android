@@ -99,6 +99,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import org.koin.compose.koinInject
+import org.siloserver.silo.model.catalog.seriesHeroBackdrop
 import org.siloserver.silo.common.ui.OnViewerAccessChanged
 import org.siloserver.silo.network.AccessChangeSignals
 import org.koin.compose.viewmodel.koinViewModel
@@ -190,13 +191,36 @@ internal fun ItemDetail?.isMatchingSeriesDetail(expectedContentId: String): Bool
         type.equals("series", ignoreCase = true) &&
         contentId == expectedContentId
 
+/**
+ * The theme set this page plays. A series or season page plays the set its
+ * hero episode resolves to (its season's, else its series'), so a season or
+ * episode opened on its series page plays what its own page would. While the
+ * hero episode's detail loads, the set already playing stands, so switching
+ * seasons never fades the theme out and back in; if it cannot load, the
+ * page's own set plays.
+ */
+@Composable
+private fun rememberTvDetailThemes(state: TvItemDetailUiState): org.siloserver.silo.model.catalog.ThemeSelection? {
+    val last = remember { arrayOfNulls<org.siloserver.silo.model.catalog.ThemeSelection>(1) }
+    val type = state.detail?.type?.lowercase()
+    val episode = state.nextUpPlaybackDetail
+    val themes = when {
+        type != "series" && type != "season" -> state.detail?.themes
+        episode != null -> episode.themes ?: state.detail?.themes
+        state.nextUpEpisode != null && !state.didLoadNextUpPlaybackDetail -> last[0] ?: state.detail?.themes
+        else -> state.detail?.themes
+    }
+    SideEffect { last[0] = themes }
+    return themes
+}
+
 @Composable
 fun TvItemDetailScreen(
     contentId: String,
     seasonNumber: Int? = null,
     libraryId: Int? = null,
     initialEpisodeContentId: String? = null,
-    onPlay: (contentId: String, fileId: Int?, audioTrackIndex: Int?, audioPickedThisSession: Boolean, subtitleSelection: TvSubtitleLaunchSelection?, itemType: String?, resumePositionSeconds: Double?) -> Unit,
+    onPlay: (contentId: String, fileId: Int?, versionChosen: Boolean, audioTrackIndex: Int?, audioPickedThisSession: Boolean, subtitleSelection: TvSubtitleLaunchSelection?, itemType: String?, resumePositionSeconds: Double?) -> Unit,
     onItemDetail: (contentId: String) -> Unit,
     onItemDetailReplace: (contentId: String) -> Unit = onItemDetail,
     onSeriesDetailReplace: (
@@ -218,6 +242,10 @@ fun TvItemDetailScreen(
     ),
 ) {
     val state by viewModel.uiState.collectAsState()
+    org.siloserver.silo.common.thememusic.DetailThemeMusic(
+        org.koin.compose.koinInject(),
+        rememberTvDetailThemes(state),
+    )
     val shuffleLauncher = org.siloserver.silo.common.ui.rememberShuffleLauncher(
         org.koin.compose.koinInject(),
         onShuffleStarted,
@@ -242,10 +270,10 @@ fun TvItemDetailScreen(
     // D5: while this TV is in a Watch Party, Play (and extras) first asks to
     // leave the party; leaving is never hidden behind a solo start.
     val watchPartyPlayGuard = rememberTvWatchPartyPlayGuard()
-    val guardedOnPlay: (String, Int?, Int?, Boolean, TvSubtitleLaunchSelection?, String?, Double?) -> Unit =
-        { playContentId, fileId, audioTrackIndex, audioPicked, subtitleSelection, itemType, resumePositionSeconds ->
+    val guardedOnPlay: (String, Int?, Boolean, Int?, Boolean, TvSubtitleLaunchSelection?, String?, Double?) -> Unit =
+        { playContentId, fileId, versionChosen, audioTrackIndex, audioPicked, subtitleSelection, itemType, resume ->
             watchPartyPlayGuard.requestPlay {
-                onPlay(playContentId, fileId, audioTrackIndex, audioPicked, subtitleSelection, itemType, resumePositionSeconds)
+                onPlay(playContentId, fileId, versionChosen, audioTrackIndex, audioPicked, subtitleSelection, itemType, resume)
             }
         }
     TvWatchPartyPlayGuardDialog(watchPartyPlayGuard)
@@ -367,7 +395,7 @@ private fun TvDetailContent(
     initialEpisodeContentId: String?,
     viewModel: TvItemDetailViewModel,
     libraryId: Int?,
-    onPlay: (contentId: String, fileId: Int?, audioTrackIndex: Int?, audioPickedThisSession: Boolean, subtitleSelection: TvSubtitleLaunchSelection?, itemType: String?, resumePositionSeconds: Double?) -> Unit,
+    onPlay: (contentId: String, fileId: Int?, versionChosen: Boolean, audioTrackIndex: Int?, audioPickedThisSession: Boolean, subtitleSelection: TvSubtitleLaunchSelection?, itemType: String?, resumePositionSeconds: Double?) -> Unit,
     onItemDetail: (contentId: String) -> Unit,
     onItemDetailReplace: (contentId: String) -> Unit,
     onSeriesClick: (seriesId: String) -> Unit,
@@ -997,6 +1025,7 @@ private fun TvDetailContent(
                                     onPlay(
                                         detail.contentId,
                                         null,
+                                        false,
                                         state.selectedAudioIndex,
                                         state.audioPickedThisSession,
                                         explicitTvSubtitleLaunchSelection(state.selectedSubtitleIndex),
@@ -1150,6 +1179,7 @@ private fun TvDetailContent(
                                         onPlay(
                                             episode.contentId,
                                             launch.fileId,
+                                            launch.versionChosen,
                                             launch.audioTrackIndex,
                                             launch.audioPickedThisSession,
                                             launch.subtitleSelection,
@@ -1164,6 +1194,7 @@ private fun TvDetailContent(
                                         onPlay(
                                             episode.contentId,
                                             launch.fileId,
+                                            launch.versionChosen,
                                             launch.audioTrackIndex,
                                             launch.audioPickedThisSession,
                                             launch.subtitleSelection,
@@ -1241,6 +1272,7 @@ private fun TvDetailContent(
                                     onPlay(
                                         extra.contentId,
                                         extra.fileId,
+                                        false,
                                         null,
                                         false,
                                         null,
@@ -1389,6 +1421,7 @@ private fun TvDetailContent(
                             onPlay(
                                 detail.contentId,
                                 null,
+                                false,
                                 state.selectedAudioIndex,
                                 state.audioPickedThisSession,
                                 explicitTvSubtitleLaunchSelection(state.selectedSubtitleIndex),
@@ -1447,11 +1480,7 @@ private fun TvDetailPlaybackSelectionSummary(
     } else {
         compactVersion
     }
-    val automaticAudioTrackOrdinal = resolveTvAutomaticAudioTrackOrdinal(
-        version = selectedVersion,
-        preferredAudioLanguage = state.preferredAudioLanguage,
-        capabilities = state.audioSelectionCapabilities,
-    )
+    val automaticAudioTrackOrdinal = state.automaticAudioOrdinal(playbackDetail, selectedVersion)
     val automaticAudioResolutionKnown = state.audioSelectionCapabilities != null
     val audioValue = selectedVersion?.let { version ->
         if (selectedAudioIndex == null && !automaticAudioResolutionKnown) {
@@ -1469,10 +1498,8 @@ private fun TvDetailPlaybackSelectionSummary(
             version = version,
             selectedSubtitleTrackIndex = selectedSubtitleIndex,
             autoContext = if (selectedAudioIndex != null || automaticAudioResolutionKnown) {
-                TvPlaybackFormatting.SubtitleAutoContext(
-                    preferredLanguage = state.preferredSubtitleLanguage,
-                    mode = state.subtitleMode,
-                    showForced = state.showForcedSubtitles,
+                state.subtitleAutoContext(
+                    playbackDetail = playbackDetail,
                     audioLanguage = TvPlaybackFormatting.resolvedAudioLanguage(
                         version,
                         selectedAudioIndex,
@@ -1611,7 +1638,7 @@ private fun HeroActionRow(
     viewModel: TvItemDetailViewModel,
     playFocus: FocusRequester,
     selectorFocus: FocusRequester,
-    onPlay: (contentId: String, fileId: Int?, audioTrackIndex: Int?, audioPickedThisSession: Boolean, subtitleSelection: TvSubtitleLaunchSelection?, itemType: String?, resumePositionSeconds: Double?) -> Unit,
+    onPlay: (contentId: String, fileId: Int?, versionChosen: Boolean, audioTrackIndex: Int?, audioPickedThisSession: Boolean, subtitleSelection: TvSubtitleLaunchSelection?, itemType: String?, resumePositionSeconds: Double?) -> Unit,
     onSeriesClick: (seriesId: String) -> Unit,
     onSeasonClick: (seriesId: String, seasonNumber: Int) -> Unit,
     libraryId: Int?,
@@ -1734,10 +1761,9 @@ private fun HeroActionRow(
         else -> null
     }
     val watchPartyOption = rememberTvWatchPartyDetailOption(watchPartyEntry, watchPartyItem)
-    val automaticAudioTrackOrdinal = resolveTvAutomaticAudioTrackOrdinal(
+    val automaticAudioTrackOrdinal = state.automaticAudioOrdinal(
+        playbackDetail = if (isSeriesOrSeason) nextUpDetail else detail,
         version = selectedVersion,
-        preferredAudioLanguage = state.preferredAudioLanguage,
-        capabilities = state.audioSelectionCapabilities,
     )
     val automaticAudioResolutionKnown = state.audioSelectionCapabilities != null
     val hasTrackOverride = selectorAudioIndex != null || selectorSubtitleIndex != null
@@ -1753,10 +1779,8 @@ private fun HeroActionRow(
         autoContext = selectedVersion?.takeIf {
             selectorAudioIndex != null || automaticAudioResolutionKnown
         }?.let { version ->
-            TvPlaybackFormatting.SubtitleAutoContext(
-                preferredLanguage = state.preferredSubtitleLanguage,
-                mode = state.subtitleMode,
-                showForced = state.showForcedSubtitles,
+            state.subtitleAutoContext(
+                playbackDetail = if (isSeriesOrSeason) nextUpDetail else detail,
                 audioLanguage = TvPlaybackFormatting.resolvedAudioLanguage(
                     version,
                     selectorAudioIndex,
@@ -1766,6 +1790,8 @@ private fun HeroActionRow(
         },
     )
     val playFileId = selectorSelectedFileId ?: selectedFileId.takeIf { hasTrackOverride }
+    // Only a version the viewer picked pins the file; a track override's file is the automatic one.
+    val playVersionChosen = selectorSelectedFileId != null
     // No separate next-up autofocus: the Play button is always rendered and
     // focusable, and the screen already focuses it on detail load, so re-focusing
     // when next-up resolves would only risk yanking focus back if the viewer had
@@ -1805,8 +1831,12 @@ private fun HeroActionRow(
                         if (playReady && !playLaunchPending) {
                             playLaunchPending = true
                             onPlay(
-                                playContentId, playFileId,
-                                selectorAudioIndex ?: automaticAudioTrackOrdinal,
+                                playContentId, playFileId, playVersionChosen,
+                                // Only a pick on this page travels as the start's
+                                // audio. Auto is resolved by the start itself,
+                                // from the server's current answer: a preview
+                                // can be older than a choice cleared here.
+                                selectorAudioIndex,
                                 selectorAudioPicked,
                                 subtitleLaunchSelection,
                                 playType, resumePosition,
@@ -1836,8 +1866,8 @@ private fun HeroActionRow(
                             if (playReady && !playLaunchPending) {
                                 playLaunchPending = true
                                 onPlay(
-                                    playContentId, playFileId,
-                                    selectorAudioIndex ?: automaticAudioTrackOrdinal,
+                                    playContentId, playFileId, playVersionChosen,
+                                    selectorAudioIndex,
                                     selectorAudioPicked,
                                     subtitleLaunchSelection,
                                     playType, 0.0,
@@ -1859,6 +1889,12 @@ private fun HeroActionRow(
                     preferredSubtitleLanguage = state.preferredSubtitleLanguage,
                     subtitleMode = state.subtitleMode,
                     showForcedSubtitles = state.showForcedSubtitles,
+                    subtitleAutoContextFor = { audioLanguage ->
+                        state.subtitleAutoContext(
+                            playbackDetail = if (isSeriesOrSeason) nextUpDetail else detail,
+                            audioLanguage = audioLanguage,
+                        )
+                    },
                     onSelectVersion = if (isSeriesOrSeason) {
                         viewModel::onNextUpVersionSelected
                     } else {
@@ -2032,6 +2068,8 @@ private fun HeroActionRow(
 
 internal data class SeriesEpisodePlaybackLaunch(
     val fileId: Int?,
+    /** [fileId] is a version the viewer picked, not the automatic one sent with a track override. */
+    val versionChosen: Boolean,
     val audioTrackIndex: Int?,
     val audioPickedThisSession: Boolean,
     val subtitleSelection: TvSubtitleLaunchSelection?,
@@ -2063,11 +2101,7 @@ internal fun seriesEpisodePlaybackLaunch(
         lastFileId = playbackDetail?.userData?.lastFileId,
         preferredQuality = state.preferredQuality,
     )
-    val automaticAudioTrackOrdinal = resolveTvAutomaticAudioTrackOrdinal(
-        version = selectedVersion,
-        preferredAudioLanguage = state.preferredAudioLanguage,
-        capabilities = state.audioSelectionCapabilities,
-    )
+    val automaticAudioTrackOrdinal = state.automaticAudioOrdinal(playbackDetail, selectedVersion)
     val automaticAudioResolutionKnown = state.audioSelectionCapabilities != null
     val hasTrackOverride = audioTrackIndex != null || subtitleTrackIndex != null
     val subtitleSelection = TvPlaybackFormatting.subtitleLaunchSelection(
@@ -2076,10 +2110,8 @@ internal fun seriesEpisodePlaybackLaunch(
         autoContext = selectedVersion?.takeIf {
             audioTrackIndex != null || automaticAudioResolutionKnown
         }?.let { version ->
-            TvPlaybackFormatting.SubtitleAutoContext(
-                preferredLanguage = state.preferredSubtitleLanguage,
-                mode = state.subtitleMode,
-                showForced = state.showForcedSubtitles,
+            state.subtitleAutoContext(
+                playbackDetail = playbackDetail,
                 audioLanguage = TvPlaybackFormatting.resolvedAudioLanguage(
                     version,
                     audioTrackIndex,
@@ -2090,7 +2122,9 @@ internal fun seriesEpisodePlaybackLaunch(
     )
     return SeriesEpisodePlaybackLaunch(
         fileId = explicitFileId ?: selectedVersion?.fileId?.takeIf { hasTrackOverride },
-        audioTrackIndex = audioTrackIndex ?: automaticAudioTrackOrdinal,
+        versionChosen = explicitFileId != null,
+        // Only a pick travels; Auto is resolved by the start (see the hero row).
+        audioTrackIndex = audioTrackIndex,
         audioPickedThisSession = selectionMatchesEpisode && state.nextUpAudioPickedThisSession,
         subtitleSelection = subtitleSelection,
         resumePositionSeconds = episode.userData?.resumePositionSeconds(),
@@ -2241,7 +2275,6 @@ private fun EpisodesSection(
                             // Up returns to the hero only when the season chips aren't above
                             // the rail (the chips own the Up traversal when present).
                             onDirectionUp = if (showsSeasonChips) null else onReturnToHero,
-                            hidesEpisodeTitle = isSeries,
                             usesSeriesGeometry = isSeries,
                             carouselJump = state.carouselJump.takeIf { isSeries },
                             hasPreviousEpisodes = isSeries && state.carouselPreviousSeason != null,
@@ -2695,8 +2728,8 @@ internal data class TvDetailHeroArtwork(
 
 /**
  * Item detail responses can legitimately omit series/season artwork even
- * though their loaded episode rows carry landscape stills. Prefer the real
- * backdrop, then an episodic landscape still; never stretch a portrait poster
+ * though their loaded episode rows carry landscape stills. Prefer an episode's
+ * series backdrop, then the real backdrop, then an episodic landscape still; never stretch a portrait poster
  * across a movie/series hero. A still that spoiler protection hides is never
  * shown full-size here: only its ThumbHash colour field is used.
  */
@@ -2705,6 +2738,8 @@ internal fun resolveTvDetailHeroArtwork(
     nextUpEpisode: EpisodeListItem?,
     spoilerPrefs: EpisodeSpoilerPrefs = EpisodeSpoilerPrefs.NONE,
 ): TvDetailHeroArtwork {
+    // An episode's series backdrop is never a still, so protection keeps it.
+    detail.seriesHeroBackdrop()?.let { return TvDetailHeroArtwork(it.url, it.thumbhash) }
     if (!detail.backdropUrl.isNullOrBlank() || !detail.backdropThumbhash.isNullOrBlank()) {
         val hidesBackdrop = detail.type.equals("episode", ignoreCase = true) &&
             spoilerPrefs.hidesImage(EpisodeSpoilers.isUnwatched(detail.userData), detail.backdropIsEpisodeStill)

@@ -1,13 +1,18 @@
 package org.siloserver.silo.android.ui.screens.player
 
+import org.siloserver.silo.common.settings.reconcileStart
+import org.siloserver.silo.common.settings.audioResetToAutoPending
 import android.util.Log
 import org.siloserver.silo.common.network.ServerReachabilityMonitor
 import org.siloserver.silo.common.player.PlaybackCapabilityDetector
+import org.siloserver.silo.common.player.PlaybackNetworkEvidenceProvider
 import org.siloserver.silo.common.player.PlaybackSessionLifecycle
 import org.siloserver.silo.common.player.PlaybackSessionManager
 import org.siloserver.silo.common.player.StartParams
 import org.siloserver.silo.common.player.TrackSelectionPresets
 import org.siloserver.silo.common.player.VideoSessionStartV3
+import org.siloserver.silo.common.player.qualityPair
+import org.siloserver.silo.common.player.usesCellularQuality
 import org.siloserver.silo.common.player.video.VideoPlaybackStartRequest
 import org.siloserver.silo.common.player.video.VideoPlaybackStartResult
 import org.siloserver.silo.common.player.video.VideoPlaybackStarter
@@ -29,9 +34,11 @@ import org.siloserver.silo.model.playback.combinedSubtitleSelectionIndexes
 import org.siloserver.silo.model.playback.applyResumeRewind
 import org.siloserver.silo.model.playback.resolvePlaybackStartRequestPosition
 import org.siloserver.silo.model.playback.resolvedSelectedSubtitleIndex
+import org.siloserver.silo.model.playback.videoQualityPreference
+import org.siloserver.silo.model.playback.withCarriedSeriesTrackChoices
+import org.siloserver.silo.model.playback.matchesSignature
 import org.siloserver.silo.network.ApiResult
 import org.siloserver.silo.playback.orNullIfBlank
-import org.siloserver.silo.playback.resolveAudioTrackOrdinal
 import org.siloserver.silo.playback.resolveCatalogSubtitlePreferenceOrdinal
 import org.siloserver.silo.playback.selectPlaybackVersion
 import org.siloserver.silo.repository.CatalogRepository
@@ -57,6 +64,7 @@ internal data class MobileVideoSessionAllocation(
     val maxBitrateKbps: Int? = null,
     val expectedMetadataOwner: org.siloserver.silo.network.AuthScopeSnapshot? = null,
     val allowAlternateVersions: Boolean? = null,
+    val allowsLocalRoute: Boolean = false,
 )
 
 internal fun interface MobileVideoSessionAllocator {
@@ -76,7 +84,10 @@ internal data class MobileInitialTrackSelection(
  * Resolves durable per-file choices before neutral-v3 allocates its first plan.
  *
  * Explicit request indexes are already playback-v3 indexes and must pass
- * through unchanged, including internal recovery starts. Persisted subtitle
+ * through unchanged, including internal recovery starts. Audio otherwise
+ * follows the server's effective track for the file ([serverAudioTrackIndex],
+ * which holds the profile's series choice); see
+ * [org.siloserver.silo.common.player.resolveStartAudioTrackOrdinal]. Persisted subtitle
  * choices are stable catalog identities, so resolve only those onto the
  * server's combined external-then-embedded index space. This lets restore
  * happen in the first plan without reinterpreting a recovery index twice.
@@ -92,16 +103,25 @@ internal fun resolveMobileInitialTrackSelection(
     persisted: LocalTrackSelection?,
     preferredAudioLanguage: String? = null,
     capabilities: ClientCodecCapabilities,
+    serverAudioTrackIndex: Int? = null,
+    audioResetToAuto: Boolean = false,
 ): MobileInitialTrackSelection {
-    val audioTrackIndex = explicitAudioTrackIndex
-        ?: resolveAudioTrackOrdinal(audioTracks, persisted?.audioFingerprint)
-        ?: preferredAudioLanguage?.let { language ->
+    val audioTrackIndex = org.siloserver.silo.common.player.resolveStartAudioTrackOrdinal(
+        explicitOrdinal = explicitAudioTrackIndex,
+        tracks = audioTracks,
+        serverOrdinal = serverAudioTrackIndex,
+        localFingerprint = persisted?.audioFingerprint,
+        resetToAuto = audioResetToAuto,
+    ) {
+        // The phone keeps the file's default track when no language is set.
+        preferredAudioLanguage?.let { language ->
             TrackSelectionPresets.selectBestCompatibleAudioTrackOrdinal(
                 tracks = audioTracks,
                 preferredAudioLanguage = language,
                 capabilities = capabilities,
             )
         }
+    }
     val persistedSubtitleOrdinal = if (explicitSubtitleTrackIndex == null) {
         resolveCatalogSubtitlePreferenceOrdinal(
             subtitleTracks,
@@ -134,7 +154,16 @@ internal class MobileVideoPlaybackStarter(
     private val userItemStatePort: UserItemStatePort? = null,
     private val sessionAllocator: MobileVideoSessionAllocator? = null,
     private val sessionAdopter: MobileVideoSessionAdopter? = null,
+    /** Picks the cellular quality pair on mobile data or a metered network. */
+    private val networkEvidenceProvider: PlaybackNetworkEvidenceProvider = PlaybackNetworkEvidenceProvider.None,
+    /** Lays a series subtitle choice that has not landed yet over the server's answer. */
+    private val seriesTrackChoiceWriter: org.siloserver.silo.common.settings.SeriesTrackChoiceWriter? = null,
 ) : VideoPlaybackStarter {
+
+    private suspend fun subtitleResetToAuto(detail: WatchDetail): Boolean {
+        val key = org.siloserver.silo.model.playback.seriesTrackChoiceKey(detail.seriesId, detail.contentId) ?: return false
+        return seriesTrackChoiceWriter?.subtitleResetToAuto(key) == true
+    }
 
     override suspend fun start(request: VideoPlaybackStartRequest): VideoPlaybackStartResult {
         // Pre-play gate: don't launch a doomed server session when the origin is
@@ -155,8 +184,21 @@ internal class MobileVideoPlaybackStarter(
         var allocatedButUnpublishedSessionId: String? = null
         var lifecycleAdopted = false
         return try {
+            var audioResetToAuto = false
+            val landedBefore = seriesTrackChoiceWriter?.landedWrites ?: 0L
             val watchDetail = when (val r = catalogRepository.getWatchDetail(request.contentId, expectedMetadataOwner, request.libraryId)) {
-                is ApiResult.Success -> r.data
+                is ApiResult.Success -> {
+                    // An Auto set here and not landed: checked before and after
+                    // the flush, which can land it after its overlay is taken.
+                    val key = org.siloserver.silo.model.playback.seriesTrackChoiceKey(r.data.seriesId, r.data.contentId)
+                    suspend fun resetPending() = key?.let { seriesTrackChoiceWriter?.audioResetToAutoPending(it) } == true
+                    audioResetToAuto = resetPending()
+                    val reconciled = seriesTrackChoiceWriter?.reconcileStart(landedBefore, r.data) {
+                        (catalogRepository.getWatchDetail(request.contentId, expectedMetadataOwner, request.libraryId) as? ApiResult.Success)?.data
+                    } ?: r.data
+                    audioResetToAuto = audioResetToAuto || resetPending()
+                    reconciled.withCarriedSeriesTrackChoices(request.carriedTrackChoices)
+                }
                 is ApiResult.Error -> return failure(
                     request.contentId,
                     "Failed to load content: ${r.message}",
@@ -192,15 +234,29 @@ internal class MobileVideoPlaybackStarter(
                 ?: cachedDetail?.posterUrl?.takeIf { it.isNotBlank() }
 
             val serverUrl = playbackSessionManager.getServerUrl()
-            val preferredQuality = request.preferredQualityOverride
-                ?: playerSettingsStore.preferredQualityFlow.first()
-            val playbackQualityIntent = request.playbackQualityIntent ?: preferredQuality
+            // On mobile data or a metered network the cellular pair stands in
+            // for the main one; the player follows later network changes. A
+            // quality picked in the player or named by the route replaces only
+            // the resolution.
+            val qualityPair = playerSettingsStore.qualityPair(
+                cellular = networkEvidenceProvider.snapshot().usesCellularQuality,
+            )
+            // Never "original" for video: older servers read it as never convert.
+            val preferredQuality = videoQualityPreference(
+                request.preferredQualityOverride ?: qualityPair.qualityPreference,
+            )
+            val playbackQualityIntent = videoQualityPreference(request.playbackQualityIntent) ?: preferredQuality
+            // What a renewal may carry over: a quality picked in the player or
+            // named by the route, never one that came from the saved settings,
+            // which a renewal reads again for the connection it is on.
+            val carriedQuality = videoQualityPreference(request.playbackQualityIntent)
+                ?: videoQualityPreference(request.preferredQualityOverride)
             // The bandwidth half of the quality choice. Quality is two axes and
             // the server applies the cap only from what the request carries —
             // nothing on the playback path reads the stored setting — so
             // sending the resolution alone lets a capped preset ("1080p Low")
             // stream at the bandwidth the user explicitly declined.
-            val maxBitrateKbps = playerSettingsStore.maxBitrateKbpsFlow.first()
+            val maxBitrateKbps = qualityPair.bandwidthCapKbps
             val configuredAudioLanguage = playerSettingsStore.audioLanguageFlow
                 .first().ifBlank { null }
             val room = request.room
@@ -228,18 +284,36 @@ internal class MobileVideoPlaybackStarter(
                         }
                     }
             }
-            // Room starts keep the file through every replan; renewals keep
-            // whatever the original start chose.
-            val allowAlternateVersions = if (room != null) {
-                false
-            } else {
-                request.recoveryStartParams?.allowAlternateVersions
+            val allowAlternateVersions = request.allowAlternateVersions()
+            // The series subtitle choice as this file holds it, by signature.
+            val seriesSubtitleSignature = watchDetail.effectiveSubtitleTrackSignature
+                ?.takeUnless { watchDetail.effectiveSubtitleMode.equals("off", ignoreCase = true) }
+            val seriesSubtitleCandidate = seriesSubtitleSignature?.let { signature ->
+                org.siloserver.silo.model.playback.catalogAutoSubtitleCandidates(version.subtitleTracks.orEmpty())
+                    .firstOrNull { it.matchesSignature(signature) }
             }
+            var restoredSeriesSubtitleIndex: Int? = null
             val persistedTrackSelection = if (
                 userItemStatePort != null &&
                 (request.audioTrackIndex == null || request.subtitleTrackIndex == null)
             ) {
                 userItemStatePort.localTrackSelection(request.contentId, version.fileId)
+                    ?.let { local ->
+                        // The series choice on the server outranks this
+                        // device's per-file memory (see the player's load).
+                        val agreeing = org.siloserver.silo.model.playback.localSubtitleMemoryForSeriesChoice(
+                            localPreference = local.subtitleFingerprint,
+                            serverChoiceKnown = true,
+                            signature = seriesSubtitleSignature,
+                            effectiveMode = watchDetail.effectiveSubtitleMode,
+                            resetToAuto = subtitleResetToAuto(watchDetail),
+                        )
+                        // A memory that agrees with the series choice restores
+                        // it — as the track the signature names, where the
+                        // file holds it, not a sibling the memory recorded.
+                        if (agreeing != null) restoredSeriesSubtitleIndex = seriesSubtitleCandidate?.selectionIndex
+                        local.copy(subtitleFingerprint = agreeing.takeIf { seriesSubtitleCandidate == null })
+                    }
             } else {
                 null
             }
@@ -270,12 +344,14 @@ internal class MobileVideoPlaybackStarter(
                 )
             val initialTracks = resolveMobileInitialTrackSelection(
                 explicitAudioTrackIndex = request.audioTrackIndex,
-                explicitSubtitleTrackIndex = request.subtitleTrackIndex,
+                explicitSubtitleTrackIndex = request.subtitleTrackIndex ?: restoredSeriesSubtitleIndex,
                 audioTracks = version.audioTracks.orEmpty(),
                 subtitleTracks = version.subtitleTracks.orEmpty(),
                 persisted = persistedTrackSelection,
                 preferredAudioLanguage = preferredAudioLanguage,
                 capabilities = capabilities,
+                serverAudioTrackIndex = version.effectiveAudioTrackIndex,
+                audioResetToAuto = audioResetToAuto,
             )
             // Skip-back-on-resume: nudge a genuine resume back a few seconds.
             // Suppressed for Start Over / retry (request flag) and Watch Party
@@ -304,6 +380,8 @@ internal class MobileVideoPlaybackStarter(
 
             if (!ownerCurrent() || profileId != expectedMetadataOwner.profileId || serverUrl != expectedMetadataOwner.serverUrl)
                 return failure(request.contentId, "identity_changed: The metadata viewer changed before playback admission.", diagnosticsCode = PlaybackDiagnosticsCode.START_REQUEST)
+            // Watch Party playback stays on the saved address, admission included.
+            val allowsLocalRoute = request.roomId.isNullOrBlank() && room == null
             val v3Start = when (
                 val r = sessionAllocator?.allocate(
                     MobileVideoSessionAllocation(
@@ -318,6 +396,7 @@ internal class MobileVideoPlaybackStarter(
                         maxBitrateKbps = maxBitrateKbps,
                         expectedMetadataOwner = expectedMetadataOwner,
                         allowAlternateVersions = allowAlternateVersions,
+                        allowsLocalRoute = allowsLocalRoute,
                     ),
                 ) ?: playbackSessionManager.startVideoSessionV3(
                     fileId = version.fileId,
@@ -331,6 +410,7 @@ internal class MobileVideoPlaybackStarter(
                     maxBitrateKbps = maxBitrateKbps,
                     expectedMetadataOwner = expectedMetadataOwner,
                     allowAlternateVersions = allowAlternateVersions,
+                    allowsLocalRoute = allowsLocalRoute,
                 )
             ) {
                 is ApiResult.Success -> r.data
@@ -405,7 +485,7 @@ internal class MobileVideoPlaybackStarter(
                 audioTrackIndex = initialTracks.audioTrackIndex ?: resolved.audioTrackIndex,
                 subtitleTrackIndex = initialTracks.subtitleTrackIndex
                     ?: readyV3.plan.resolvedSelectedSubtitleIndex(),
-                qualityPreference = playbackQualityIntent,
+                qualityPreference = carriedQuality,
                 startPosition = sourceStartPos,
                 clientPlaybackContext = readyV3.clientPlaybackContext,
                 allowAlternateVersions = allowAlternateVersions,

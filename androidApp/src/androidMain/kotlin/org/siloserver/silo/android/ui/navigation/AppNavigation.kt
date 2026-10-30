@@ -85,6 +85,8 @@ import org.siloserver.silo.android.ui.screens.auth.SignupScreen
 import org.siloserver.silo.android.ui.screens.onboarding.OnboardingTourScreen
 import org.siloserver.silo.android.ui.screens.browse.BrowseScreen
 import org.siloserver.silo.android.ui.screens.browse.BrowseViewModel
+import org.siloserver.silo.android.ui.screens.browse.SectionBrowseScreen
+import org.siloserver.silo.viewmodel.SectionBrowseArgs
 import org.siloserver.silo.android.ui.screens.calendar.CalendarScreen
 import org.siloserver.silo.android.ui.screens.collections.CollectionDetailScreen
 import org.siloserver.silo.android.ui.screens.collections.CollectionsScreen
@@ -112,6 +114,7 @@ import org.siloserver.silo.android.ui.screens.profiles.CreateProfileScreen
 import org.siloserver.silo.android.ui.screens.profiles.EditProfileScreen
 import org.siloserver.silo.android.ui.screens.profiles.ProfileSelectionScreen
 import org.siloserver.silo.android.ui.screens.requests.MyRequestsScreen
+import org.siloserver.silo.android.ui.screens.requests.RequestDiscoverRowScreen
 import org.siloserver.silo.android.ui.screens.requests.RequestDetailScreen
 import org.siloserver.silo.android.ui.screens.requests.RequestsScreen
 import org.siloserver.silo.android.ui.screens.search.MobileSearchMediaType
@@ -1354,6 +1357,22 @@ fun AppNavigation(
                 onMyRequestsClick = { navController.navigate(Route.MyRequests.route) },
                 onRequestDetailClick = openRequestDetail,
                 onLibraryItemClick = openRequestLibraryItem,
+                onDiscoverRowClick = { key, title -> navController.navigate(Route.RequestDiscoverRow(key, title).route) },
+            )
+        }
+        composable(
+            route = Route.RequestDiscoverRow.ROUTE,
+            arguments = listOf(
+                navArgument("key") { type = NavType.StringType },
+                navArgument("title") { type = NavType.StringType; defaultValue = "" },
+            ),
+        ) { backStackEntry ->
+            RequestDiscoverRowScreen(
+                rowKey = backStackEntry.arguments?.getString("key").orEmpty(),
+                title = backStackEntry.arguments?.getString("title").orEmpty(),
+                onBackClick = { navController.popBackStack() },
+                onRequestDetailClick = openRequestDetail,
+                onLibraryItemClick = openRequestLibraryItem,
             )
         }
         composable(Route.MyRequests.route) {
@@ -1445,6 +1464,40 @@ fun AppNavigation(
             )
         }
 
+        composable(
+            route = Route.SectionBrowse.ROUTE,
+            arguments = listOf(
+                navArgument("sectionId") { type = NavType.StringType },
+                navArgument("title") {
+                    type = NavType.StringType
+                    defaultValue = ""
+                },
+                navArgument("libraryId") {
+                    type = NavType.StringType
+                    nullable = true
+                    defaultValue = null
+                },
+                navArgument("mediaScope") {
+                    type = NavType.StringType
+                    nullable = true
+                    defaultValue = null
+                },
+            ),
+        ) { backStackEntry ->
+            val libraryId = backStackEntry.arguments?.getString("libraryId")?.toIntOrNull()
+            SectionBrowseScreen(
+                args = SectionBrowseArgs(
+                    sectionId = backStackEntry.arguments?.getString("sectionId").orEmpty(),
+                    title = backStackEntry.arguments?.getString("title").orEmpty(),
+                    libraryId = libraryId,
+                    mediaScope = backStackEntry.arguments?.getString("mediaScope")
+                        ?.takeIf { it in setOf("movie", "series") },
+                ),
+                onBackClick = { navController.popBackStack() },
+                onItemClick = { item -> navController.navigate(sectionBrowseDetailRoute(item, libraryId)) },
+            )
+        }
+
         // ---- Detail screens ----
         composable(
             route = Route.ItemDetail.ROUTE,
@@ -1518,7 +1571,8 @@ fun AppNavigation(
                 openingArtworkUrl = openingArtworkUrl,
                 openingArtworkThumbhash = openingArtworkThumbhash,
                 onBackClick = { navController.popBackStack() },
-                onPlayClick = { contentId, fileId, audioTrackIndex, subtitleTrackIndex, resumePositionSeconds ->
+                onPlayClick = {
+                        contentId, fileId, versionChosen, audioTrackIndex, subtitleTrackIndex, resumePositionSeconds ->
                     val launchedRemotely = siloCastController.launchOnConnectedTarget(
                         SiloCastPlaybackRequest(
                             contentId = contentId,
@@ -1528,6 +1582,7 @@ fun AppNavigation(
                             subtitleTrackIndex = subtitleTrackIndex,
                             startFromBeginning = resumePositionSeconds == null,
                             resumePosition = resumePositionSeconds,
+                            pinsVersion = true.takeIf { versionChosen && fileId != null },
                         ),
                     )
                     if (launchedRemotely) {
@@ -1538,6 +1593,7 @@ fun AppNavigation(
                                 libraryId = libraryId,
                                 contentId = contentId,
                                 fileId = fileId,
+                                versionChosen = versionChosen,
                                 audioTrackIndex = audioTrackIndex,
                                 subtitleTrackIndex = subtitleTrackIndex,
                                 resumePositionSeconds = resumePositionSeconds,
@@ -1770,6 +1826,11 @@ fun AppNavigation(
                     nullable = true
                     defaultValue = null
                 },
+                navArgument("versionChosen") {
+                    type = NavType.StringType
+                    nullable = true
+                    defaultValue = null
+                },
             ),
         ) { backStackEntry ->
             val playerViewModel = koinViewModel<PlayerViewModel>()
@@ -1789,6 +1850,7 @@ fun AppNavigation(
                 libraryId = backStackEntry.arguments?.getString("libraryId")?.toIntOrNull(),
                 contentId = backStackEntry.arguments?.getString("contentId") ?: "",
                 initialFileId = backStackEntry.arguments?.getString("fileId")?.toIntOrNull(),
+                initialVersionChosen = backStackEntry.arguments?.getString("versionChosen") == "true",
                 initialQuality = VideoPlayerRouteArgs.normalizeQuality(
                     backStackEntry.arguments?.getString("quality"),
                 ),
