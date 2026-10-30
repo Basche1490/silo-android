@@ -186,6 +186,13 @@ and as an argument where the module builds `ProfileAwayTracker(…)`:
 isCasting = org.siloserver.silo.tv.ui.screens.player.external.ZidooHandoffCoordinator::isHandingOffNow,
 ```
 
+and as an argument where the module builds `PlaybackSessionManager(…)`:
+
+```kotlin
+// [zidoo-fork] A Zidoo hand-off ignores bandwidth limits learned from Silo's own player.
+bufferingQualityMode = { org.siloserver.silo.tv.ui.screens.player.external.ZidooHandoffCoordinator.bufferingQualityModeNow() },
+```
+
 **`androidTvApp/src/androidMain/kotlin/org/siloserver/silo/tv/ui/navigation/TvAppNavigation.kt`**,
 two imports:
 
@@ -235,7 +242,10 @@ are the dependencies to check:
   `stop`, `settlePendingPublicationIfCurrent`, `retireUnpublishedSession`,
   `sessionEndedEvents`) and `PlaybackSessionManager` (`getAccessToken`,
   `confirmVideoSessionPublication`, `rollbackUnpublishedVideoSession`,
-  `abandonActiveVideoSessionIfCurrent`).
+  `abandonActiveVideoSessionIfCurrent`, and its `bufferingQualityMode`
+  constructor parameter with `BufferingQualityMode.NEVER`).
+- **Quality:** `PLAYBACK_QUALITY_AUTO` as the way to ask for the source, and
+  the starter's `preferredQualityOverride` and `playbackQualityIntent`.
 - **Capabilities:** `PlaybackCapabilityDetector` and the playback context
   models the server plans with (`ClientCodecCapabilities`,
   `ClientPlaybackContext`, the `original_http` delivery).

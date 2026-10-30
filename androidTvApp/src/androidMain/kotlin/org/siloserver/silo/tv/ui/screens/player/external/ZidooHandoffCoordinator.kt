@@ -48,6 +48,7 @@ import org.siloserver.silo.common.player.external.settledPositionMs
 import org.siloserver.silo.common.player.video.VideoPlaybackStartRequest
 import org.siloserver.silo.common.player.video.VideoPlaybackStartResult
 import org.siloserver.silo.common.player.video.VideoPlaybackStarter
+import org.siloserver.silo.domain.player.BufferingQualityMode
 import org.siloserver.silo.model.catalog.TimeRange
 import org.siloserver.silo.model.playback.PlayMethod
 import org.siloserver.silo.model.playback.PlaybackDelivery
@@ -166,6 +167,10 @@ class ZidooHandoffCoordinator(
     @Volatile
     private var zidooPaused = false
 
+    /** True while a run is asking the server for its playback session; see bufferingQualityModeNow. */
+    @Volatile
+    private var startingSession = false
+
     /** The run whose screen went behind PlexToZidoo or the Zidoo player. */
     @Volatile
     private var hiddenRunId = 0L
@@ -272,7 +277,13 @@ class ZidooHandoffCoordinator(
             // Checked first, so a box without PlexToZidoo never opens a server session.
             if (!isPlexToZidooInstalled(appContext)) return fail(runId, NOT_INSTALLED_MESSAGE, canPlayInSilo = true)
 
-            val ready = when (val result = starter.start(withZidooCapabilities(request))) {
+            startingSession = true
+            val started = try {
+                starter.start(withZidooCapabilities(request))
+            } finally {
+                startingSession = false
+            }
+            val ready = when (val result = started) {
                 is VideoPlaybackStartResult.Ready -> result
                 is VideoPlaybackStartResult.Error -> return fail(runId, result.message, canPlayInSilo = true)
                 is VideoPlaybackStartResult.ServerUnreachable ->
@@ -624,6 +635,17 @@ class ZidooHandoffCoordinator(
          * when no coordinator has been created, since then nothing is playing.
          */
         fun isHandingOffNow(): Boolean = current?.isHandingOff() == true
+
+        /**
+         * The buffering-quality mode Silo's session manager plans a start
+         * with. While a hand-off asks for its session it is NEVER, so the
+         * request carries `learned_limit: ignore`: a bandwidth limit the
+         * server learned from Silo's own player buffering on this box would
+         * otherwise plan a transcode, which the Zidoo player cannot be given.
+         * Every other start keeps the default, as in upstream Silo's TV app.
+         */
+        fun bufferingQualityModeNow(): BufferingQualityMode =
+            if (current?.startingSession == true) BufferingQualityMode.NEVER else BufferingQualityMode.Default
 
         /** The intent that opens PlexToZidoo for [request]; null when it has neither a path nor a stream. */
         private fun plexToZidooIntent(request: PlexToZidooLaunch.Request): Intent? {

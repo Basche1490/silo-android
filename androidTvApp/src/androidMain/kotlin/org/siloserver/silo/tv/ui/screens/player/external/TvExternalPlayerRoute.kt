@@ -10,7 +10,7 @@ import org.koin.compose.koinInject
 import org.siloserver.silo.common.player.external.ExternalPlayerSettings
 import org.siloserver.silo.common.player.video.EpisodeSelectionHandoff
 import org.siloserver.silo.common.player.video.VideoPlaybackStartRequest
-import org.siloserver.silo.model.playback.QUALITY_ORIGINAL_V3
+import org.siloserver.silo.model.playback.PLAYBACK_QUALITY_AUTO
 
 /** What the `TvRoute.Player` destination was opened with. */
 data class ZidooHandoffArgs(
@@ -69,10 +69,11 @@ fun handOffToZidooIfEnabled(
             audioTrackIndex = args.audioTrackIndex,
             subtitleTrackIndex = args.subtitleTrackIndex,
             // The Zidoo player reads the file itself, so pick the best version
-            // unless one was chosen, and ask the server not to plan a
-            // lower-quality transcode.
-            preferredQualityOverride = args.preferredQuality ?: QUALITY_ORIGINAL_V3,
-            playbackQualityIntent = QUALITY_ORIGINAL_V3,
+            // unless one was chosen, whatever quality Silo's own player is set
+            // to. Auto is how Silo asks for the source (it retired Original);
+            // the Zidoo capabilities make the source playable.
+            preferredQualityOverride = args.preferredQuality ?: PLAYBACK_QUALITY_AUTO,
+            playbackQualityIntent = PLAYBACK_QUALITY_AUTO,
             episodeSelectionHandoff = args.episodeSelectionHandoff,
         )
     }

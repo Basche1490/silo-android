@@ -223,6 +223,8 @@ val androidTvModule = module {
             tokenManager = get(),
             networkEvidenceProvider = get(),
             passthroughSuppression = PassthroughSuppressionScope.None,
+            // [zidoo-fork] A Zidoo hand-off ignores bandwidth limits learned from Silo's own player.
+            bufferingQualityMode = { org.siloserver.silo.tv.ui.screens.player.external.ZidooHandoffCoordinator.bufferingQualityModeNow() },
         )
     }
     factory<VideoPlaybackStarter>(named("tvVideoPlaybackStarter")) {

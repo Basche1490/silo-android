@@ -190,14 +190,18 @@ Edits to Silo's own files, each marked `[zidoo-fork]` (`git grep "\[zidoo-fork\]
 | --- | --- |
 | `androidTvApp/.../tv/MainTvActivity.kt` | `attachBaseContext` applies `TvInterfaceScale.overrideConfiguration(...)` |
 | `androidTvApp/src/androidMain/AndroidManifest.xml` | `<queries>` for PlexToZidoo; the foreground service |
-| `androidTvApp/.../tv/di/AndroidTvModule.kt` | `includes(externalPlayerTvModule)`; `isCasting = ZidooHandoffCoordinator::isHandingOffNow` on the profile tracker, so Zidoo playback counts as using the profile |
+| `androidTvApp/.../tv/di/AndroidTvModule.kt` | `includes(externalPlayerTvModule)`; `isCasting = ZidooHandoffCoordinator::isHandingOffNow` on the profile tracker, so Zidoo playback counts as using the profile; `bufferingQualityMode = { ZidooHandoffCoordinator.bufferingQualityModeNow() }` on the session manager, so a hand-off ignores learned bandwidth limits |
 | `androidTvApp/.../tv/ui/navigation/TvAppNavigation.kt` | `handOffToZidooIfEnabled(...)` in the `TvRoute.Player` destination, just before Silo's player is composed; its `onPlayNextEpisode` opens the next episode's `TvRoute.Player` in place of this one |
 | `androidTvApp/.../tv/ui/screens/settings/TvSettingsScreen.kt` | `item { TvExternalPlayerSettingsGroup() }` |
 
 ## How it works
 
-A hand-off starts a normal Silo playback session (asking for original
-quality), because that session is how Silo records progress. The session is
+A hand-off starts a normal Silo playback session (on Auto quality, which is
+how Silo asks for the source, whatever Silo's own player is set to), because
+that session is how Silo records progress. The request tells the server to
+ignore any bandwidth limit it learned from Silo's own player buffering on this
+box (Settings → Playback → Lower quality when buffering), since the Zidoo
+player cannot be given a transcode. The session is
 planned for the Zidoo player: Silo's detected capabilities, widened to every
 common audio codec with no channel limit, the Blu-ray and DVD codecs and
 containers, and the server's `client_managed_dynamic_range_v1` claim (the
@@ -242,7 +246,7 @@ because Zidoo firmware only lets a couple of apps stay in the background.
   and a film streaming from Silo stops, because the relay lives in Silo. A
   film playing from the share through a path substitution carries on.
 - The server can still convert a file the Zidoo player could play: when
-  Silo's own playback settings cap the bitrate, for a codec outside the list
+  Settings → Playback → Maximum Bitrate caps it, for a codec outside the list
   above (AV1 or VP9 on a box whose decoder Silo didn't detect), or when the
   server's administrator settings force it. There is then no original-file
   stream to send, so the file plays only through a PlexToZidoo path
