@@ -25,6 +25,7 @@ class ExternalPlayerSettingsTest {
         assertEquals(false, settings.enabled.value)
         assertEquals(ZidooSkipSettings(skipIntro = true, skipCredits = false), settings.skipSettings())
         assertEquals(10, settings.upNextCountdownSeconds.value)
+        assertEquals(false, settings.directStreamLink.value)
     }
 
     @Test
@@ -37,6 +38,7 @@ class ExternalPlayerSettingsTest {
             setUpNextCountdownSeconds(5)
             // Not one of the offered lengths: ignored.
             setUpNextCountdownSeconds(7)
+            setDirectStreamLink(true)
         }
 
         val reloaded = ExternalPlayerSettings(storage)
@@ -44,5 +46,6 @@ class ExternalPlayerSettingsTest {
         assertEquals(true, reloaded.enabled.value)
         assertEquals(ZidooSkipSettings(skipIntro = false, skipCredits = true), reloaded.skipSettings())
         assertEquals(5, reloaded.upNextCountdownSeconds.value)
+        assertEquals(true, reloaded.directStreamLink.value)
     }
 }

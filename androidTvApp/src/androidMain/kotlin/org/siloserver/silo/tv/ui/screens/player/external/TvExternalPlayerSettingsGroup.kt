@@ -33,6 +33,7 @@ internal fun TvExternalPlayerSettingsGroup(
     val skipCredits by settings.skipCredits.collectAsState()
     val fitToTv by settings.fitToTv.collectAsState()
     val upNextCountdown by settings.upNextCountdownSeconds.collectAsState()
+    val directStreamLink by settings.directStreamLink.collectAsState()
     var choosingCountdown by remember { mutableStateOf(false) }
     // Checked again on each toggle, so installing PlexToZidoo and coming back is noticed.
     val plexToZidooInstalled = remember(enabled) { isPlexToZidooInstalled(context) }
@@ -71,6 +72,18 @@ internal fun TvExternalPlayerSettingsGroup(
                 "PlexToZidoo isn't installed. Get it from github.com/bowlingbeeg/PlexToZidoo/releases " +
                     "before turning this on."
             },
+        )
+        SettingsToggleRow(
+            label = "Direct Stream Link",
+            checked = directStreamLink,
+            onCheckedChange = settings::setDirectStreamLink,
+            enabled = enabled,
+        )
+        SettingsFooterText(
+            text = "Gives the Zidoo player a link straight to your Silo server, as Plex does, instead of " +
+                "passing the stream through Silo on this box. The link contains your sign-in, which " +
+                "PlexToZidoo's Debug data shows, and it can expire during a very long film, after which " +
+                "seeking fails.",
         )
     }
     if (choosingCountdown) {

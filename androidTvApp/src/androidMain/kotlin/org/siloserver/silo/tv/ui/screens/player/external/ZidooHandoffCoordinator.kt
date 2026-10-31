@@ -315,12 +315,15 @@ class ZidooHandoffCoordinator(
             if (!confirmed) return fail(runId, "Playback could not be started. Try again.", canPlayInSilo = true)
 
             // The Zidoo player reaches the stream through the relay, which
-            // signs each request with the current token; the direct link with
-            // the token in it is only for a box where the relay cannot start.
-            relay = upstream?.let { startRelay(it, path, ready) }
-            val directLink = upstream?.takeIf { ready.accessToken.isNotBlank() }
-                ?.let { PlexToZidooLaunch.withQueryParameter(it, "token", ready.accessToken) }
+            // signs each request with the current token. The direct link
+            // carries the token in its address, as Plex's links do: for when
+            // Settings asks for it, or a box where the relay cannot start.
+            relay = upstream?.takeUnless { settings.directStreamLink.value }?.let { startRelay(it, path, ready) }
+            val directToken = sessionManager.getAccessToken()?.takeIf { it.isNotBlank() } ?: ready.accessToken
+            val directLink = upstream?.takeIf { directToken.isNotBlank() }
+                ?.let { PlexToZidooLaunch.withQueryParameter(it, "token", directToken) }
             val streamUrl = relay?.url ?: directLink
+            Log.i(TAG, if (relay != null) "Streaming through the relay" else "Streaming by direct link")
 
             // Looked up while the episode plays, so Up Next is ready the
             // moment the Zidoo player closes.

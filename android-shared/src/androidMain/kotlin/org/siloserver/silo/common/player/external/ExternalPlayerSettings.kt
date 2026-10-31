@@ -15,7 +15,8 @@ import kotlinx.coroutines.flow.asStateFlow
  * Fitting the interface to the TV defaults on: it only acts on a box that
  * reports a lower screen density than Android TV's standard (Zidoo does).
  * Up Next counts down [UP_NEXT_COUNTDOWN_DEFAULT_SECONDS] seconds, as Silo's
- * own player does, unless another length is chosen.
+ * own player does, unless another length is chosen. Streams go through the
+ * relay unless the direct link is chosen.
  */
 class ExternalPlayerSettings(private val storage: Storage) {
 
@@ -47,6 +48,14 @@ class ExternalPlayerSettings(private val storage: Storage) {
     /** How long Up Next waits before opening the next episode; 0 opens it at once. */
     val upNextCountdownSeconds: StateFlow<Int> = _upNextCountdownSeconds.asStateFlow()
 
+    private val _directStreamLink = MutableStateFlow(storage.read(KEY_DIRECT_STREAM_LINK) ?: false)
+
+    /**
+     * Gives the Zidoo player the server's stream address with the sign-in in
+     * it, as Plex's links carry their token, instead of the relay on this box.
+     */
+    val directStreamLink: StateFlow<Boolean> = _directStreamLink.asStateFlow()
+
     fun setEnabled(value: Boolean) = set(KEY_ENABLED, _enabled, value)
 
     fun setSkipIntro(value: Boolean) = set(KEY_SKIP_INTRO, _skipIntro, value)
@@ -54,6 +63,8 @@ class ExternalPlayerSettings(private val storage: Storage) {
     fun setSkipCredits(value: Boolean) = set(KEY_SKIP_CREDITS, _skipCredits, value)
 
     fun setFitToTv(value: Boolean) = set(KEY_FIT_TO_TV, _fitToTv, value)
+
+    fun setDirectStreamLink(value: Boolean) = set(KEY_DIRECT_STREAM_LINK, _directStreamLink, value)
 
     fun setUpNextCountdownSeconds(value: Int) {
         if (value !in UP_NEXT_COUNTDOWN_OPTIONS) return
@@ -77,6 +88,7 @@ class ExternalPlayerSettings(private val storage: Storage) {
         private const val KEY_SKIP_INTRO = "zidoo_skip_intro"
         private const val KEY_SKIP_CREDITS = "zidoo_skip_credits"
         private const val KEY_UP_NEXT_COUNTDOWN = "zidoo_up_next_countdown_seconds"
+        private const val KEY_DIRECT_STREAM_LINK = "zidoo_direct_stream_link"
 
         /** The lengths Settings offers for the Up Next countdown, in seconds. */
         val UP_NEXT_COUNTDOWN_OPTIONS = listOf(0, 3, 5, 10, 15, 20, 30)

@@ -98,7 +98,15 @@ If the Zidoo player doesn't play the file, Silo says what it sent PlexToZidoo
 offers a button that opens PlexToZidoo's settings. The Zidoo player saying it
 cannot open `no-path-substitution-matched` means Silo had no stream to offer
 and no rule matched. PlexToZidoo's *Debug data* setting shows what it plays
-before playback starts.
+before playback starts: an `smb://` or `nfs://` location when a substitution
+rule matched, and Silo's stream otherwise.
+
+If Silo's stream (`http://127.0.0.1:…`) doesn't play, turn on **Settings →
+External Player → Direct Stream Link** and try again. The Zidoo player then
+streams straight from your Silo server, as it does from Plex, instead of
+through Silo on the box. That link contains your sign-in, so PlexToZidoo's
+Debug data shows it, and it can expire during a very long film, after which
+seeking fails.
 
 If Silo cannot hand off at all (PlexToZidoo missing, or neither a stream nor a
 file path for the title), it says why and offers **Play in Silo**.
@@ -218,9 +226,9 @@ its requests. The token never appears in the address, so PlexToZidoo's debug
 screen and the Zidoo player's history don't hold it, and a token the app
 renews during a long film is used from the next request. PlexToZidoo plays
 the share location when one of its substitution rules matches the path, and
-the relay's address otherwise. (On a box where the relay cannot start, Silo
-gives the Zidoo player the server's stream address with `token=` instead, as
-Plex links carry `X-Plex-Token`.)
+the relay's address otherwise. With **Direct Stream Link** on, or on a box
+where the relay cannot start, Silo gives the Zidoo player the server's stream
+address with `token=` instead, as Plex links carry `X-Plex-Token`.
 
 Silo polls `http://127.0.0.1:9529/ZidooVideoPlay/getPlayStatus` once a
 second, seeks with `ZidooVideoPlay/seekTo` to skip markers, reports progress
