@@ -22,8 +22,11 @@ Silo still tracks the playback:
 - **Audio and subtitles.** Your audio choice carries over. A subtitle carries
   over when it is embedded in the file; anything else is left to the Zidoo
   player's own language settings.
-- **Up Next.** When an episode plays to the end (into the credits, or its
-  last half minute), Silo shows the next one, from this season or the next.
+- **Up Next.** When an episode plays to the end (on into its end credits, or
+  to its last half minute), Silo shows the next one, from this season or the
+  next. Stopping partway never offers it, and neither does seeking into the
+  credits or a credits marker in the first half of the episode, which some
+  files use for the opening credits.
   With Settings → Playback → Auto-Play Next Episode on, it opens in the Zidoo
   player after a countdown, 10 seconds unless you change **Settings →
   External Player → Up Next Countdown** (right away, or 3 to 30 seconds).

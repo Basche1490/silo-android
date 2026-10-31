@@ -38,6 +38,7 @@ import org.siloserver.silo.common.player.resolvePlaybackStreamUrl
 import org.siloserver.silo.common.player.external.ExternalPlayerSettings
 import org.siloserver.silo.common.player.external.PlexToZidooLaunch
 import org.siloserver.silo.common.player.external.SkipRange
+import org.siloserver.silo.common.player.external.ZidooEndWatch
 import org.siloserver.silo.common.player.external.ZidooMonitorOutcome
 import org.siloserver.silo.common.player.external.ZidooPlaybackMonitor
 import org.siloserver.silo.common.player.external.ZidooPlayerApi
@@ -389,6 +390,8 @@ class ZidooHandoffCoordinator(
                     settings = settings.skipSettings(),
                 ),
             )
+            // Whether the episode plays to its end, for Up Next.
+            val endWatch = ZidooEndWatch(creditsStartSeconds = ready.credits?.start)
             val outcome = coroutineScope {
                 // As in Silo's own player: when the server ends the session for
                 // good (an administrator stopped it), playback ends too.
@@ -417,6 +420,7 @@ class ZidooHandoffCoordinator(
                         keepWaiting = { relay?.servedWithin(RELAY_ACTIVE_WINDOW_MS) == true },
                         onStarted = { setState(runId, ZidooHandoffState.Playing(runId, title)) },
                         onSample = { sample ->
+                            endWatch.onSample(sample.positionMs, sample.durationMs)
                             if (sample.paused != zidooPaused) {
                                 zidooPaused = sample.paused
                                 onPlaybackActivityChanged()
@@ -464,7 +468,7 @@ class ZidooHandoffCoordinator(
                     if (!stopped) Log.w(TAG, "Another playback took over before the final position was saved")
                     sessionClosed = true
                     val lookup = nextEpisode
-                    val upNext = if (lookup != null && reachedEnd(outcome, ready)) {
+                    val upNext = if (lookup != null && endWatch.reachedEnd(outcome.lastPositionMs, outcome.durationMs)) {
                         withTimeoutOrNull(UP_NEXT_LOOKUP_WAIT_MS) { lookup.await() }
                     } else {
                         null
@@ -555,21 +559,6 @@ class ZidooHandoffCoordinator(
         if (!original || ready.requestHeaders.isNotEmpty()) return null
         val url = resolvePlaybackStreamUrl(ready.serverUrl, ready.streamUrl)
         return url.takeIf { it.startsWith("http://", ignoreCase = true) || it.startsWith("https://", ignoreCase = true) }
-    }
-
-    /**
-     * Whether the episode played to its end, the point where Silo's own player
-     * offers Up Next: into the credits by the server's marker, or within the
-     * last half minute when there is none.
-     */
-    private fun reachedEnd(outcome: ZidooMonitorOutcome.Finished, ready: VideoPlaybackStartResult.Ready): Boolean {
-        val position = outcome.lastPositionMs
-        val duration = outcome.durationMs
-        if (position <= 0L || duration <= 0L) return false
-        val creditsStartMs = ready.credits?.start?.takeIf { it > 0.0 }?.let { (it * 1000).toLong() }
-        return settledPositionMs(position, duration) >= duration ||
-            duration - position <= END_WINDOW_MS ||
-            creditsStartMs != null && position >= creditsStartMs
     }
 
     /**
@@ -710,9 +699,6 @@ class ZidooHandoffCoordinator(
             "The Zidoo player played this, but Silo couldn't read its position, so it didn't save your place " +
                 "or skip markers. Silo reads it from the Zidoo player's control interface, which needs firmware " +
                 "6.4.42 or later (1.1.42 or later on the Z9X 8K line)."
-
-        /** Without a credits marker, how close to the end a stop still counts as the end. */
-        private const val END_WINDOW_MS = 30_000L
 
         /** How long the end of a run waits for an Up Next lookup still in flight. */
         private const val UP_NEXT_LOOKUP_WAIT_MS = 5_000L
