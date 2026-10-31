@@ -4,6 +4,7 @@ import android.content.Context
 import org.koin.android.ext.koin.androidContext
 import org.koin.core.qualifier.named
 import org.koin.dsl.module
+import org.siloserver.silo.common.di.PLAYER_TRANSPORT_OKHTTP_QUALIFIER
 import org.siloserver.silo.common.player.external.ExternalPlayerSettings
 import org.siloserver.silo.common.player.external.HttpZidooPlayerApi
 import org.siloserver.silo.common.player.external.ZidooPlayerApi
@@ -54,6 +55,8 @@ val externalPlayerTvModule = module {
             // Zidoo playback is playback on another screen: tell the profile
             // tracker when it pauses, resumes or ends, as the phone does for Cast.
             onPlaybackActivityChanged = { get<ProfileAwayTracker>().onRemotePlaybackChanged() },
+            // The relay connects as Silo's own video player does.
+            relayClient = get(PLAYER_TRANSPORT_OKHTTP_QUALIFIER),
         )
     }
 }

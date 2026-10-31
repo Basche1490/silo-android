@@ -50,6 +50,11 @@ import org.siloserver.silo.common.player.video.VideoPlaybackStartResult
 import org.siloserver.silo.common.player.video.VideoPlaybackStarter
 import org.siloserver.silo.domain.player.BufferingQualityMode
 import org.siloserver.silo.model.catalog.TimeRange
+import org.siloserver.silo.network.httpOrigin
+import org.siloserver.silo.network.localroute.LocalRouteHeaders
+import org.siloserver.silo.network.localroute.LocalRoutes
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import okhttp3.OkHttpClient
 import org.siloserver.silo.model.playback.PlayMethod
 import org.siloserver.silo.model.playback.PlaybackDelivery
 
@@ -93,6 +98,8 @@ sealed interface ZidooHandoffState {
         val serverPath: String?,
         /** Scheme, host and port of the Silo stream it plays when no rule matches, if one was sent. */
         val streamOrigin: String?,
+        /** What Silo's relay saw, when the stream went through it. */
+        val relayReport: String? = null,
     )
 }
 
@@ -150,6 +157,8 @@ class ZidooHandoffCoordinator(
      * tracker, as the phone does for Cast. Called on the coordinator's scope.
      */
     private val onPlaybackActivityChanged: () -> Unit,
+    /** Carries the relay's requests to the server: Silo's own video player's pooled client. */
+    private val relayClient: OkHttpClient,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
@@ -437,6 +446,7 @@ class ZidooHandoffCoordinator(
                     notPlayed = ZidooHandoffState.NotPlayed(
                         serverPath = path,
                         streamOrigin = upstream?.takeIf { streamUrl != null }?.let { originOf(it) },
+                        relayReport = relay?.report(),
                     ),
                 )
                 is ZidooMonitorOutcome.Finished -> {
@@ -602,15 +612,36 @@ class ZidooHandoffCoordinator(
     /** Starts the relay for [upstream]; null, and a log line, when this box will not let it listen. */
     private fun startRelay(upstream: String, path: String?, ready: VideoPlaybackStartResult.Ready): ZidooStreamRelay? =
         try {
-            ZidooStreamRelay(upstream, ZidooStreamRelay.fileNameFor(path, ready.container), accessToken = {
-                // Read on each request, so a token the app renewed during the
-                // film is used as soon as it exists.
-                runBlocking { sessionManager.getAccessToken() } ?: ready.accessToken
-            })
+            ZidooStreamRelay(
+                upstreamUrl = upstream,
+                fileName = ZidooStreamRelay.fileNameFor(path, ready.container),
+                accessToken = {
+                    // Read on each request, so a token the app renewed during
+                    // the film is used as soon as it exists.
+                    runBlocking { sessionManager.getAccessToken() } ?: ready.accessToken
+                },
+                client = relayClient,
+                upstreamHeaders = localRouteMarker(upstream, ready),
+            )
         } catch (e: Exception) {
             Log.w(TAG, "Could not start the stream relay; giving the Zidoo player a direct link", e)
             null
         }
+
+    /**
+     * Silo's local-route marker for [upstream], as its own player sets it for
+     * a stream: while the box is on the server's local network and the stream
+     * is on the saved address, the relay then fetches it from the server's
+     * local address. The hand-off's session was admitted with the local route
+     * allowed, so the server already counts it as local.
+     */
+    private fun localRouteMarker(upstream: String, ready: VideoPlaybackStartResult.Ready): Map<String, String> {
+        val route = LocalRoutes.state.active.value ?: return emptyMap()
+        val onSavedAddress = httpOrigin(ready.serverUrl) == route.savedOrigin && httpOrigin(upstream) == route.savedOrigin
+        val streamPath = upstream.toHttpUrlOrNull()?.encodedPath.orEmpty()
+        if (!onSavedAddress || !streamPath.startsWith("/api/")) return emptyMap()
+        return mapOf(LocalRouteHeaders.MEDIA to route.generation.toString())
+    }
 
     private fun displayTitle(ready: VideoPlaybackStartResult.Ready): String {
         val series = ready.seriesTitle?.takeIf { it.isNotBlank() }

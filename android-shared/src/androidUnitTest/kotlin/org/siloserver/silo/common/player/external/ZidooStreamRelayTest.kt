@@ -5,6 +5,7 @@ import com.sun.net.httpserver.HttpServer
 import java.net.ConnectException
 import java.net.HttpURLConnection
 import java.net.InetSocketAddress
+import java.net.ServerSocket
 import java.net.URI
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicReference
@@ -157,6 +158,32 @@ class ZidooStreamRelayTest {
         relay.close()
 
         assertFailsWith<ConnectException> { open(relay.url).responseCode }
+    }
+
+    @Test
+    fun reportsWhetherThePlayerAskedAndWhatTheServerAnswered() {
+        assertEquals("The Zidoo player never asked Silo for the video.", relay().report())
+
+        // A token the server keeps refusing: the player gets the refusal, and
+        // the failure card can name it.
+        val refused = ZidooStreamRelay(upstreamUrl, "video.mkv", { "revoked" }, tokenRenewalWaitMs = 200)
+            .also { relays += it }
+        assertEquals(401, open(refused.url).responseCode)
+
+        val report = refused.report()
+        assertTrue(report.startsWith("The Zidoo player asked Silo for the video 1 time, "), report)
+        assertTrue("HTTP 401" in report, report)
+    }
+
+    @Test
+    fun reportsAServerItCannotReach() {
+        // A port nothing listens on any more.
+        val closedPort = ServerSocket(0).use { it.localPort }
+        val relay = ZidooStreamRelay("http://127.0.0.1:$closedPort/api/v2/stream/0b9e6a1c", "video.mkv", { "fresh" })
+            .also { relays += it }
+
+        assertEquals(502, open(relay.url).responseCode)
+        assertTrue("Silo couldn't get the video from your server" in relay.report(), relay.report())
     }
 
     @Test

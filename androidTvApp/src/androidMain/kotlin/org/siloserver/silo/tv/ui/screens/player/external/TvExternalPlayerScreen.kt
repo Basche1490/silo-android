@@ -299,6 +299,10 @@ private fun FailedCard(
             )
         }
         Text(text = notPlayedHelp(notPlayed), style = TvPlayerType.Body)
+        // Where the chain broke, when the stream went through Silo's relay.
+        notPlayed.relayReport?.let { report ->
+            Text(text = report, style = TvPlayerType.RowDetail)
+        }
     }
 }
 

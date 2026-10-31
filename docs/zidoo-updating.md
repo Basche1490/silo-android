@@ -266,7 +266,10 @@ are the dependencies to check:
   the starter's `preferredQualityOverride` and `playbackQualityIntent`.
 - **Streaming:** `resolvePlaybackStreamUrl`, the server accepting the access
   token as `Authorization: Bearer` (the relay) and as a `token` query
-  parameter on the stream address (Direct Stream Link).
+  parameter on the stream address (Direct Stream Link). The relay sends its
+  requests through Silo's video player client (`PLAYER_TRANSPORT_OKHTTP_QUALIFIER`)
+  and marks them for the local route as Silo's player does
+  (`LocalRoutes.state`, `LocalRouteHeaders.MEDIA`, `httpOrigin`).
 - **Capabilities:** `PlaybackCapabilityDetector` and the playback context
   models the server plans with (`ClientCodecCapabilities`,
   `ClientPlaybackContext`, the `original_http` delivery).

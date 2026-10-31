@@ -101,8 +101,11 @@ and no rule matched. PlexToZidoo's *Debug data* setting shows what it plays
 before playback starts: an `smb://` or `nfs://` location when a substitution
 rule matched, and Silo's stream otherwise.
 
-If Silo's stream (`http://127.0.0.1:…`) doesn't play, turn on **Settings →
-External Player → Direct Stream Link** and try again. The Zidoo player then
+If Silo's stream (`http://127.0.0.1:…`) doesn't play, the card also says what
+Silo's relay saw: whether the Zidoo player asked it for the video, how long
+your server took to answer, and what went wrong between Silo and the server.
+To play anyway, turn on **Settings → External Player → Direct Stream Link**
+and try again. The Zidoo player then
 streams straight from your Silo server, as it does from Plex, instead of
 through Silo on the box. That link contains your sign-in, so PlexToZidoo's
 Debug data shows it, and it can expire during a very long film, after which
@@ -222,7 +225,12 @@ stream address on the box itself, `http://127.0.0.1:<port>/<random>/video.mkv`
 (with the file's own extension). Behind that address is a small relay in
 Silo that forwards each request to the session's stream on your server,
 signed with Silo's current access token, the way Silo's own player signs
-its requests. The token never appears in the address, so PlexToZidoo's debug
+its requests. It connects as Silo's own player does, through that player's
+connection pool, so connections are reused instead of opened for every
+request, and to your server's local address while the box is at home (when
+Silo shows "Connected on your local network"). It tries a server's IPv4
+address before its IPv6 one, because a home server's IPv6 address often
+answers only inside the home. The token never appears in the address, so PlexToZidoo's debug
 screen and the Zidoo player's history don't hold it, and a token the app
 renews during a long film is used from the next request. PlexToZidoo plays
 the share location when one of its substitution rules matches the path, and
@@ -262,9 +270,10 @@ because Zidoo firmware only lets a couple of apps stay in the background.
   substitution, and Silo says so. The transcode the server starts is never
   used; its throttling pauses it after about five minutes of output, but it
   holds one of your server's transcode slots until playback ends.
-- Away from home, the relay's stream (`http://127.0.0.1:…`) has failed to play
-  a 4K remux that played with **Direct Stream Link** on. Turn that on for
-  playback outside your home network.
+- Away from home, builds before October 31, 2026 failed to play a 4K remux
+  through the relay that played with **Direct Stream Link** on. The relay now
+  tries IPv4 first and reuses connections; if it still fails, the failure card
+  says what it saw, and Direct Stream Link plays around it.
 - Streaming through the relay goes through Silo on the box, which copies the
   film's bytes from your server to the Zidoo player. A Zidoo handles a 4K
   remux's bitrate easily, but it is one more hop than playing from the share.
