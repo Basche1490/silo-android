@@ -36,10 +36,17 @@ You only need to step in when a run fails.
 | Build with the newest Silo code now | **Actions → Zidoo TV APK → Run workflow**. Takes about 15 minutes. |
 | Bring the fork's own code up to date | **Sync fork → Update branch** on the fork's main page. This also starts a build. |
 
-The workflow merges Silo into a temporary copy, so the fork's branch only
-changes when you sync it or someone pushes. GitHub pauses scheduled workflows
-after 60 days without activity; re-enable **Zidoo TV APK** from the
-**Actions** tab if that happens.
+The workflow merges Silo into a temporary copy, so the APK has the newest
+Silo code but the fork's branch only changes when you sync it or someone
+pushes. The further the branch falls behind, the bigger the merge when it
+finally happens, so bring the branch up to date every month or so: press
+**Sync fork**, or ask Claude with the prompt under
+[Option A](#option-a-ask-claude-to-do-it-recommended).
+
+A clean build does not prove the Zidoo behaves as before. Silo sometimes
+changes how playback works without breaking the build; this happened when
+Silo retired Original quality. After each update, run the
+[checks on the Zidoo](#after-an-update-check-on-the-zidoo).
 
 ## When a run fails
 
@@ -55,26 +62,37 @@ Open the failed run (**Actions → Zidoo TV APK**) and see which step failed:
 A failed run publishes nothing, so the APK on the Downloader address stays the
 last good one.
 
+**No run started at all.** If a push, **Sync fork** or Monday passes without a
+new **Zidoo TV APK** run, GitHub Actions is probably off for the fork. Open
+**Settings → Actions → General**, choose **Allow all actions and reusable
+workflows** and save, then **Actions → Zidoo TV APK → Run workflow**. Turning
+Actions on does not build earlier pushes by itself. GitHub also pauses
+scheduled workflows after 60 days without activity; re-enable **Zidoo TV APK**
+from the **Actions** tab if it says so.
+
 ## Fixing it
 
 ### Option A: ask Claude to do it (recommended)
 
-Use this when Claude can work on GitHub for you, for example Claude Code with
-the repository attached. Start a new chat and paste:
+Use this for a routine update as well as a failed run. It needs a Claude
+that can work on GitHub for you: Claude Code on the web (claude.ai/code) or
+in the desktop app, with **Basche1490/silo-android** selected as the
+repository. Start a new session and paste the prompt below as it is. It
+needs no earlier chat history: the guide it points to holds the rest.
 
 ```
 Please update my Silo Android TV fork, github.com/Basche1490/silo-android, with the newest code from github.com/Silo-Server/silo-android (main branch).
 
-Rules: only push to my fork's main branch. Never push to Silo-Server/silo-android and never open a pull request there.
+Rules: only push to my fork's main branch, even if this session was set up with a different working branch. Never push to Silo-Server/silo-android and never open a pull request there. Don't change .github/zidoo-debug.keystore or the application ID.
 
-My fork adds Zidoo external-player support: playing in the Zidoo player through PlexToZidoo, with Silo tracking resume progress, auto-skipping intro and credits, Up Next with a countdown, and Fit Interface to TV for the Zidoo's screen density. First read docs/zidoo-updating.md and docs/zidoo-external-player.md in my fork; they list every file the fork adds and every [zidoo-fork] edit to Silo's own files.
+My fork adds Zidoo external-player support: playing in the Zidoo player through PlexToZidoo, with Silo tracking resume progress, auto-skipping intro and credits, Up Next with a countdown, a Direct Stream Link option, and Fit Interface to TV for the Zidoo's screen density. First read docs/zidoo-updating.md and docs/zidoo-external-player.md in my fork; they list every file the fork adds, every [zidoo-fork] edit to Silo's own files, and the Silo code the fork depends on.
 
 Please:
-1. Merge Silo-Server/silo-android main into my fork's main. Resolve any conflicts keeping both Silo's change and every [zidoo-fork] edit.
-2. If Silo changed code the fork depends on, adapt the fork's files so they build and behave as before. Check the list under "Silo code the fork depends on" in docs/zidoo-updating.md.
-3. Run the External Player unit tests if you can, push, and wait for the "Zidoo TV APK" GitHub Action to pass.
-4. Confirm the new release APK is a release build signed with my fork's key and has a versionCode no lower than the previous release, so it installs over my current app.
-5. Tell me in plain language what changed and what I should test on the Zidoo.
+1. Merge Silo-Server/silo-android main into my fork's main. Resolve any conflicts keeping both Silo's change and every [zidoo-fork] edit. Afterwards every [zidoo-fork] edit the guide lists must still be there.
+2. Check what Silo changed in the code the fork depends on. Adapt the fork's files so they still build and behave as before, including changes that build cleanly but alter playback, such as quality, bandwidth limits, network routing, sessions, Up Next or settings. Update the two docs if you add or change a [zidoo-fork] edit or a dependency.
+3. Run the External Player unit tests if your environment can build Android; if it can't, say so and rely on the GitHub Action. Push to main and wait for the "Zidoo TV APK" GitHub Action to pass. If no run starts within a few minutes, check whether GitHub Actions is turned off for my fork, tell me how to turn it on, and then start the workflow manually.
+4. From the run's log, confirm the APK is a non-debuggable release build signed with my fork's key, and that its versionCode is no lower than the previous release's, so it installs over my current app.
+5. Tell me in plain language what changed in Silo, what you changed in the fork, and what I should test on the Zidoo.
 ```
 
 ### Option B: fix it with a Claude chat that can't reach GitHub
@@ -246,6 +264,9 @@ are the dependencies to check:
   constructor parameter with `BufferingQualityMode.NEVER`).
 - **Quality:** `PLAYBACK_QUALITY_AUTO` as the way to ask for the source, and
   the starter's `preferredQualityOverride` and `playbackQualityIntent`.
+- **Streaming:** `resolvePlaybackStreamUrl`, the server accepting the access
+  token as `Authorization: Bearer` (the relay) and as a `token` query
+  parameter on the stream address (Direct Stream Link).
 - **Capabilities:** `PlaybackCapabilityDetector` and the playback context
   models the server plans with (`ClientCodecCapabilities`,
   `ClientPlaybackContext`, the `original_http` delivery).
@@ -274,4 +295,8 @@ Install the new APK from the Downloader address, then check:
 5. Silo's menus are full size (Settings → Interface Size → Fit Interface to
    TV).
 6. Settings → External Player still lists Play in Zidoo Player, the skip
-   options and Up Next Countdown.
+   options, Up Next Countdown and Direct Stream Link.
+7. Settings → Playback → Maximum Bitrate is set to no limit. A cap makes the
+   server convert large files, which the Zidoo player can't be given.
+8. Away from home, or on another network, a film plays with Direct Stream Link
+   on.

@@ -251,8 +251,9 @@ because Zidoo firmware only lets a couple of apps stay in the background.
   on the server are not available to it.
 - If Silo's process is killed during playback despite the foreground service,
   the resume point is the last one saved, at most about ten seconds earlier,
-  and a film streaming from Silo stops, because the relay lives in Silo. A
-  film playing from the share through a path substitution carries on.
+  and a film streaming through the relay stops, because the relay lives in
+  Silo. A film playing by Direct Stream Link, or from the share through a
+  path substitution, carries on.
 - The server can still convert a file the Zidoo player could play: when
   Settings → Playback → Maximum Bitrate caps it, for a codec outside the list
   above (AV1 or VP9 on a box whose decoder Silo didn't detect), or when the
@@ -261,6 +262,9 @@ because Zidoo firmware only lets a couple of apps stay in the background.
   substitution, and Silo says so. The transcode the server starts is never
   used; its throttling pauses it after about five minutes of output, but it
   holds one of your server's transcode slots until playback ends.
-- Streaming goes through Silo on the box, which copies the film's bytes from
-  your server to the Zidoo player. A Zidoo handles a 4K remux's bitrate
-  easily, but it is one more hop than playing from the share.
+- Away from home, the relay's stream (`http://127.0.0.1:…`) has failed to play
+  a 4K remux that played with **Direct Stream Link** on. Turn that on for
+  playback outside your home network.
+- Streaming through the relay goes through Silo on the box, which copies the
+  film's bytes from your server to the Zidoo player. A Zidoo handles a 4K
+  remux's bitrate easily, but it is one more hop than playing from the share.
