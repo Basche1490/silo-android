@@ -195,7 +195,7 @@ New files (no clash possible):
 | Keeps Silo alive while the Zidoo player plays | `androidTvApp/.../player/external/ZidooHandoffService.kt` |
 | Screen behind the Zidoo player | `androidTvApp/.../player/external/TvExternalPlayerScreen.kt` |
 | Route switch, settings group, wiring | `androidTvApp/.../player/external/TvExternalPlayerRoute.kt`, `TvExternalPlayerSettingsGroup.kt`, `ExternalPlayerTvModule.kt`, `PlexToZidooAvailability.kt` |
-| Build and release workflow, debug key | `.github/workflows/zidoo-tv-apk.yml`, `.github/zidoo-debug.keystore` |
+| Build and release workflow, debug key, release clean-up | `.github/workflows/zidoo-tv-apk.yml`, `.github/zidoo-debug.keystore`, `.github/workflows/zidoo-prune-releases.yml` |
 | How to bring in Silo updates | `docs/zidoo-updating.md` |
 
 Edits to Silo's own files, each marked `[zidoo-fork]` (`git grep "\[zidoo-fork\]"`):

@@ -35,6 +35,7 @@ You only need to step in when a run fails.
 | Wait for the weekly build | Nothing. Install from the Downloader address when you like. |
 | Build with the newest Silo code now | **Actions → Zidoo TV APK → Run workflow**. Takes about 15 minutes. |
 | Bring the fork's own code up to date | **Sync fork → Update branch** on the fork's main page. This also starts a build. |
+| Delete old releases | **Actions → Zidoo prune releases → Run workflow**. Keeps the newest 3 (or the number you enter) and always the one the Downloader address serves. |
 
 The workflow merges Silo into a temporary copy, so the APK has the newest
 Silo code but the fork's branch only changes when you sync it or someone
@@ -147,7 +148,7 @@ them all.
 | PlexToZidoo launch, Zidoo control API, playback monitor, skips, track mapping, stream relay, capabilities, settings | `android-shared/src/androidMain/kotlin/org/siloserver/silo/common/player/external/` |
 | Their unit tests | `android-shared/src/androidUnitTest/kotlin/org/siloserver/silo/common/player/external/` |
 | Hand-off, foreground service, screens, Up Next, settings group, interface scale, wiring | `androidTvApp/src/androidMain/kotlin/org/siloserver/silo/tv/ui/screens/player/external/` |
-| Build and release workflow, signing key | `.github/workflows/zidoo-tv-apk.yml`, `.github/zidoo-debug.keystore` |
+| Build and release workflow, signing key, release clean-up | `.github/workflows/zidoo-tv-apk.yml`, `.github/zidoo-debug.keystore`, `.github/workflows/zidoo-prune-releases.yml` |
 | Documentation | `docs/zidoo-external-player.md`, `docs/zidoo-updating.md` |
 
 ### Edits to Silo's own files
