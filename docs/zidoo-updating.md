@@ -285,7 +285,9 @@ are the dependencies to check:
   `onRemotePlaybackChanged`.
 - **Screens and settings:** `TvDialogCard`, `TvPlayerChrome`, `TvPlayerType`,
   `SettingsGroup`, `SettingsToggleRow`, `SettingsValueRow`,
-  `SettingsFooterText`, `TvSettingsPickerSheet` and `PickerOption`.
+  `SettingsFooterText`, `TvSettingsPickerSheet` and `PickerOption`, and
+  `PlayerSettingsStore.themeMusicEnabledFlow` and `setThemeMusicEnabled` for the
+  theme music warning.
 - **Build:** the `siloVersionName`, `siloBuildNumber`, `siloVersionCode` and
   `siloReleaseChannel` Gradle properties, the `SILO_RELEASE_KEYSTORE*`
   signing variables, Silo's versionCode formula and its `vX.Y.Z-beta.B` tags,
@@ -326,6 +328,15 @@ not undo them; the unit tests named in brackets guard the ones they can.
   the relay before the player asked for the video, or, by Direct Stream Link,
   stopped tracking a film that went on playing, so nothing was saved. A
   player that closes without playing still ends the wait within seconds.
+- **Theme music stays off while the Zidoo player is used.** Once Silo has
+  played any sound since it started, the Zidoo firmware force-stops Silo,
+  keep-alive service included, about two seconds after the Zidoo player starts.
+  The Hand-off Log showed it ("force-stopped … due to from pid …" by a system
+  process) on every title after a theme song had played, however long ago, and
+  never after Silo was opened again with Theme Music off. Releasing the theme's
+  audio before the hand-off made no difference, so the fork doesn't change
+  Silo's theme music code; Settings → External Player warns while Theme Music
+  is on and offers to turn it off.
 - **Resume lands on the resume point.** The Zidoo player can start a large
   file at 0:00; the monitor moves it to the resume point and saves nothing
   short of it (`ZidooPlaybackMonitorTest`).
@@ -376,3 +387,5 @@ Install the new APK from the Downloader address, then check:
 10. With Skip Credits Automatically on, the credits are skipped at the end of
     an episode, not right after its intro.
 11. Seeking more than an hour into a long film still works.
+12. Settings → Theme Music is off, and Settings → External Player shows its
+    Theme Music warning when you turn it on.

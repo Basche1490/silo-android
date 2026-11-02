@@ -69,7 +69,9 @@ remember the profile or change Profile Selection in Settings.
    starts on; credits skipping starts off, because on a film it jumps past any
    scene after the credits. **Up Next Countdown** sets how long Up Next waits
    before the next episode.
-2. Play something.
+2. Keep **Settings → Theme Music** off (see Known limits). While it is on,
+   External Player shows a **Turn Off** button for it.
+3. Play something.
 
 That is all most setups need. The Zidoo player streams the original file from
 your Silo server, as ZDMC streams from Plex, so PlexToZidoo needs no path
@@ -266,6 +268,14 @@ because Zidoo firmware only lets a couple of apps stay in the background.
 
 - Up Next appears once the Zidoo player has closed, not over the credits
   while they play.
+- **Theme music.** Once Silo has played any sound since it started, a theme
+  song on a detail page included, the Zidoo firmware force-stops Silo whenever
+  the Zidoo player starts. Through the relay the title then doesn't play ("Can't
+  play video"); by Direct Stream Link it plays, but no progress is saved. This
+  lasts until Silo is opened again. Keep **Settings → Theme Music** off while
+  you use the Zidoo player; Settings → External Player offers to turn it off.
+  Playing something in Silo's own player probably has the same effect until
+  Silo is opened again.
 - The interface size is set when Silo opens. If the box changes its interface
   resolution while Silo is open, reopen Silo.
 - A multi-part film (CD1/CD2 files) plays only the part you start in.

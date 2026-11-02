@@ -8,10 +8,13 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import org.koin.compose.koinInject
+import kotlinx.coroutines.launch
 import org.siloserver.silo.common.player.external.ExternalPlayerSettings
+import org.siloserver.silo.common.settings.PlayerSettingsStore
 import org.siloserver.silo.tv.ui.screens.settings.PickerOption
 import org.siloserver.silo.tv.ui.screens.settings.SettingsFooterText
 import org.siloserver.silo.tv.ui.screens.settings.SettingsGroup
@@ -26,8 +29,11 @@ import org.siloserver.silo.tv.ui.screens.settings.TvSettingsPickerSheet
 @Composable
 internal fun TvExternalPlayerSettingsGroup(
     settings: ExternalPlayerSettings = koinInject(),
+    playerSettings: PlayerSettingsStore = koinInject(),
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val themeMusic by playerSettings.themeMusicEnabledFlow.collectAsState(initial = false)
     val enabled by settings.enabled.collectAsState()
     val skipIntro by settings.skipIntro.collectAsState()
     val skipCredits by settings.skipCredits.collectAsState()
@@ -44,6 +50,21 @@ internal fun TvExternalPlayerSettingsGroup(
             checked = enabled,
             onCheckedChange = settings::setEnabled,
         )
+        // Once Silo has played any sound, the Zidoo firmware force-stops it
+        // when the Zidoo player starts, until Silo starts again. Theme music
+        // is the sound Silo plays without being asked to.
+        if (enabled && themeMusic) {
+            SettingsValueRow(
+                label = "Theme Music Is On",
+                value = "Turn Off",
+                onClick = { scope.launch { playerSettings.setThemeMusicEnabled(false) } },
+            )
+            SettingsFooterText(
+                text = "After Silo plays a theme song, the Zidoo closes Silo whenever its player starts, so " +
+                    "nothing plays in the Zidoo player until Silo is opened again. Turn Theme Music off while " +
+                    "you use the Zidoo player.",
+            )
+        }
         SettingsToggleRow(
             label = "Skip Intros Automatically",
             checked = skipIntro,
