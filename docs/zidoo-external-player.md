@@ -102,7 +102,10 @@ offers a button that opens PlexToZidoo's settings. The Zidoo player saying it
 cannot open `no-path-substitution-matched` means Silo had no stream to offer
 and no rule matched. PlexToZidoo's *Debug data* setting shows what it plays
 before playback starts: an `smb://` or `nfs://` location when a substitution
-rule matched, and Silo's stream otherwise.
+rule matched, and Silo's stream otherwise. That screen waits for its PLAY
+button. Silo waits up to five minutes for the Zidoo player to show the video,
+counting from when PlexToZidoo opens, so turn Debug data off again when you
+are done with it.
 
 If Silo's stream (`http://127.0.0.1:…`) doesn't play, the card also says what
 Silo's relay saw: whether the Zidoo player asked it for the video, how long

@@ -384,6 +384,7 @@ class ZidooHandoffCoordinator(
             val monitor = ZidooPlaybackMonitor(
                 api = zidoo,
                 startPositionMs = startPositionMs,
+                startupTimeoutMs = PLAYER_START_TIMEOUT_MS,
                 planner = ZidooSkipPlanner(
                     intro = ready.intro?.toSkipRange(),
                     credits = ready.credits?.toSkipRange(),
@@ -699,6 +700,16 @@ class ZidooHandoffCoordinator(
             "The Zidoo player played this, but Silo couldn't read its position, so it didn't save your place " +
                 "or skip markers. Silo reads it from the Zidoo player's control interface, which needs firmware " +
                 "6.4.42 or later (1.1.42 or later on the Z9X 8K line)."
+
+        /**
+         * How long Silo waits for the Zidoo player to report the video before
+         * deciding it didn't play. Generous, because the wait starts before
+         * PlexToZidoo opens it: PlexToZidoo's Debug data screen waits for its
+         * PLAY button, and a large file from a server across the internet takes
+         * a while to open. A player that closes without playing brings Silo
+         * back to the front, which ends the wait within [RETURN_GRACE_MS].
+         */
+        private const val PLAYER_START_TIMEOUT_MS = 5 * 60_000L
 
         /** How long the end of a run waits for an Up Next lookup still in flight. */
         private const val UP_NEXT_LOOKUP_WAIT_MS = 5_000L

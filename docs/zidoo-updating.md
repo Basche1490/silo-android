@@ -318,6 +318,14 @@ not undo them; the unit tests named in brackets guard the ones they can.
   partway, seeking into the credits, resuming inside them, and a credits marker
   in the first half of the episode (opening credits) never trigger it
   (`ZidooEndWatchTest`).
+- **Silo waits long enough for the Zidoo player.** It waits up to five
+  minutes (`PLAYER_START_TIMEOUT_MS`) for the player to report the video,
+  counting from when PlexToZidoo opens. PlexToZidoo's Debug data screen waits
+  for its PLAY button, and a 4K remux from a server across the internet takes
+  a while to open. With the old one-minute wait, Silo gave up first: it shut
+  the relay before the player asked for the video, or, by Direct Stream Link,
+  stopped tracking a film that went on playing, so nothing was saved. A
+  player that closes without playing still ends the wait within seconds.
 - **Resume lands on the resume point.** The Zidoo player can start a large
   file at 0:00; the monitor moves it to the resume point and saves nothing
   short of it (`ZidooPlaybackMonitorTest`).
