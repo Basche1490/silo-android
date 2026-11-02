@@ -140,8 +140,6 @@ How updates arrive:
 - On the 1st of every month the workflow fetches the newest Silo code, merges
   it into a temporary copy of your branch, runs the External Player tests,
   builds, and publishes a release. A month with no new commits builds nothing.
-- After each successful run it deletes all but the newest three releases,
-  always keeping the one the Downloader address serves.
 - Run it any time from **Actions → Zidoo TV APK → Run workflow**.
 - The workflow never changes your branch. To bring the branch itself up to
   date, use **Sync fork** on the fork's main page; that also triggers a build.
@@ -198,7 +196,7 @@ New files (no clash possible):
 | Keeps Silo alive while the Zidoo player plays | `androidTvApp/.../player/external/ZidooHandoffService.kt` |
 | Screen behind the Zidoo player | `androidTvApp/.../player/external/TvExternalPlayerScreen.kt` |
 | Route switch, settings group, wiring | `androidTvApp/.../player/external/TvExternalPlayerRoute.kt`, `TvExternalPlayerSettingsGroup.kt`, `ExternalPlayerTvModule.kt`, `PlexToZidooAvailability.kt` |
-| Build and release workflow, debug key, release clean-up | `.github/workflows/zidoo-tv-apk.yml`, `.github/zidoo-debug.keystore`, `.github/workflows/zidoo-prune-releases.yml` |
+| Build and release workflow, debug key | `.github/workflows/zidoo-tv-apk.yml`, `.github/zidoo-debug.keystore` |
 | How to bring in Silo updates | `docs/zidoo-updating.md` |
 
 Edits to Silo's own files, each marked `[zidoo-fork]` (`git grep "\[zidoo-fork\]"`):

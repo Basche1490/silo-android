@@ -12,8 +12,7 @@ tests, builds the APK and publishes it at the same Downloader address:
 
     https://github.com/Basche1490/silo-android/releases/latest/download/silo-tv-zidoo.apk
 
-After each successful run it deletes all but the newest three releases. You
-only need to step in when a run fails.
+You only need to step in when a run fails.
 
 ## Rules that keep Zidoo support
 
@@ -36,7 +35,7 @@ only need to step in when a run fails.
 | Wait for the monthly build | Nothing. Install from the Downloader address when you like. |
 | Build with the newest Silo code now | **Actions → Zidoo TV APK → Run workflow**. Takes about 15 minutes. |
 | Bring the fork's own code up to date | **Sync fork → Update branch** on the fork's main page. This also starts a build. |
-| Delete old releases | Nothing: each successful build keeps the newest 3. To do it yourself, **Actions → Zidoo prune releases → Run workflow** keeps the newest 3 (or the number you enter). Both always keep the one the Downloader address serves. |
+| Delete old releases | On the fork's **Releases** page, open an old release and press **Delete**. Never delete the one marked **Latest**: the Downloader address serves it. |
 
 The workflow merges Silo into a temporary copy, so the APK has the newest
 Silo code but the fork's branch only changes when you sync it or someone
@@ -95,7 +94,7 @@ Please:
 1. Merge Silo-Server/silo-android main into my fork's main. Resolve any conflicts keeping both Silo's change and every [zidoo-fork] edit. Afterwards every [zidoo-fork] edit the guide lists must still be there. Don't add new edits to Silo's files unless a feature needs one.
 2. Check what Silo changed in the code the fork depends on. Adapt the fork's files so they still build and behave as before, including changes that build cleanly but alter playback, such as quality, bandwidth limits, network routing, sessions, Up Next or settings. Keep every point under "Behaviour the fork must keep"; where Silo changed how its own player does the same thing, follow Silo. Update the two docs if you add or change a [zidoo-fork] edit, a dependency or a behaviour.
 3. Run the External Player unit tests. If your environment can't build Android, run the ones the guide's "Testing without the Android SDK" section describes, and say which ran. Push to main and wait for the "Zidoo TV APK" GitHub Action to pass. If no run starts within a few minutes, check whether GitHub Actions is turned off for my fork, tell me how to turn it on, and then start the workflow manually.
-4. From the run's log, confirm the APK is a non-debuggable release build signed with my fork's key, and that its versionCode is no lower than the previous release's, so it installs over my current app. Confirm the new release is marked Latest and the run's "Delete old releases" job kept the newest three.
+4. From the run's log, confirm the APK is a non-debuggable release build signed with my fork's key, and that its versionCode is no lower than the previous release's, so it installs over my current app. Confirm the new release is marked Latest.
 5. Tell me in plain language what changed in Silo, what you changed in the fork, and what I should test on the Zidoo.
 ```
 
@@ -151,7 +150,7 @@ them all.
 | PlexToZidoo launch, Zidoo control API, playback monitor, skips, Up Next end rule, track mapping, stream relay, capabilities, settings | `android-shared/src/androidMain/kotlin/org/siloserver/silo/common/player/external/` |
 | Their unit tests | `android-shared/src/androidUnitTest/kotlin/org/siloserver/silo/common/player/external/` |
 | Hand-off, foreground service, screens, Up Next, settings group, interface scale, wiring | `androidTvApp/src/androidMain/kotlin/org/siloserver/silo/tv/ui/screens/player/external/` |
-| Build and release workflow, signing key, release clean-up | `.github/workflows/zidoo-tv-apk.yml`, `.github/zidoo-debug.keystore`, `.github/workflows/zidoo-prune-releases.yml` |
+| Build and release workflow, signing key | `.github/workflows/zidoo-tv-apk.yml`, `.github/zidoo-debug.keystore` |
 | Documentation | `docs/zidoo-external-player.md`, `docs/zidoo-updating.md` |
 
 ### Edits to Silo's own files

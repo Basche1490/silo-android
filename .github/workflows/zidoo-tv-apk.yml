@@ -26,9 +26,8 @@ name: Zidoo TV APK
 # (vX.Y.Z-beta.B tag) and that build's versionCode, which only ever goes up, so
 # each APK installs over the last.
 #
-# After each successful run, zidoo-prune-releases.yml deletes all but the
-# newest three releases. Each run also resets GitHub's 60-day inactivity timer,
-# which would otherwise pause the monthly schedule in a fork nobody pushes to.
+# Each run also resets GitHub's 60-day inactivity timer, which would otherwise
+# pause the monthly schedule in a fork nobody pushes to.
 
 on:
   schedule:
@@ -273,12 +272,3 @@ jobs:
             --notes "$notes" \
             --latest
           echo "Released $tag: https://github.com/$GITHUB_REPOSITORY/releases/latest/download/silo-tv-zidoo.apk" >> "$GITHUB_STEP_SUMMARY"
-
-  prune:
-    name: Delete old releases
-    # After a successful run, keep the newest three releases and delete the
-    # rest. The release marked Latest is always kept.
-    needs: apk
-    uses: ./.github/workflows/zidoo-prune-releases.yml
-    with:
-      keep: 3
