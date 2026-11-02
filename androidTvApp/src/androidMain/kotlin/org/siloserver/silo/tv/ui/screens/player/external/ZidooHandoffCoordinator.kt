@@ -4,6 +4,7 @@ import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.util.Log
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
@@ -39,6 +40,7 @@ import org.siloserver.silo.common.player.external.ExternalPlayerSettings
 import org.siloserver.silo.common.player.external.PlexToZidooLaunch
 import org.siloserver.silo.common.player.external.SkipRange
 import org.siloserver.silo.common.player.external.ZidooEndWatch
+import org.siloserver.silo.common.player.external.ZidooHandoffLog
 import org.siloserver.silo.common.player.external.ZidooMonitorOutcome
 import org.siloserver.silo.common.player.external.ZidooPlaybackMonitor
 import org.siloserver.silo.common.player.external.ZidooPlayerApi
@@ -160,6 +162,8 @@ class ZidooHandoffCoordinator(
     private val onPlaybackActivityChanged: () -> Unit,
     /** Carries the relay's requests to the server: Silo's own video player's pooled client. */
     private val relayClient: OkHttpClient,
+    /** Settings → External Player → Hand-off Log: what each step of the latest hand-off did. */
+    private val handoffLog: ZidooHandoffLog,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
@@ -234,6 +238,7 @@ class ZidooHandoffCoordinator(
     /** Tells the run that its screen went behind another app. Only a pause after PlexToZidoo opened counts. */
     fun onScreenHidden(runId: Long) {
         val current = _state.value
+        if (current.runId == runId && current.isActive()) handoffLog.add("Silo went behind another app")
         if (current is ZidooHandoffState.Launched && current.runId == runId) hiddenRunId = runId
     }
 
@@ -246,6 +251,7 @@ class ZidooHandoffCoordinator(
      */
     fun onScreenShown(runId: Long) {
         val current = _state.value
+        if (current.runId == runId && current.isActive()) handoffLog.add("Silo is in front again")
         if (current is ZidooHandoffState.Launched && current.runId == runId && hiddenRunId == runId) {
             returnedBeforePlayback.value = runId
         }
@@ -284,6 +290,7 @@ class ZidooHandoffCoordinator(
         var relay: ZidooStreamRelay? = null
         var nextEpisode: Deferred<ZidooHandoffState.UpNextEpisode?>? = null
         try {
+            handoffLog.startRun("Hand-off started (${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE})")
             // Checked first, so a box without PlexToZidoo never opens a server session.
             if (!isPlexToZidooInstalled(appContext)) return fail(runId, NOT_INSTALLED_MESSAGE, canPlayInSilo = true)
 
@@ -299,6 +306,10 @@ class ZidooHandoffCoordinator(
                 is VideoPlaybackStartResult.ServerUnreachable ->
                     return fail(runId, "Silo can't reach your server right now.", canPlayInSilo = false)
             }
+            handoffLog.add(
+                "Session ready: ${displayTitle(ready)}, ${ready.playMethod}/${ready.delivery ?: "-"}, " +
+                    "file ${ready.fileId ?: ready.mediaFileId}, start ${ready.sourceStartPositionSeconds.toLong()} s",
+            )
             val id = ready.sessionId
                 ?: return fail(runId, "The server didn't open a playback session.", canPlayInSilo = true)
             sessionId = id
@@ -334,6 +345,13 @@ class ZidooHandoffCoordinator(
                 ?.let { PlexToZidooLaunch.withQueryParameter(it, "token", directToken) }
             val streamUrl = relay?.url ?: directLink
             Log.i(TAG, if (relay != null) "Streaming through the relay" else "Streaming by direct link")
+            handoffLog.add(
+                when {
+                    relay != null -> "Stream: through Silo's relay, from ${upstream?.let { originOf(it) }}"
+                    directLink != null -> "Stream: direct link to ${upstream?.let { originOf(it) }}"
+                    else -> "Stream: none, the share path only"
+                },
+            )
 
             // Looked up while the episode plays, so Up Next is ready the
             // moment the Zidoo player closes.
@@ -366,13 +384,14 @@ class ZidooHandoffCoordinator(
             // Silo is still in the foreground here, which Android requires
             // before it allows a foreground service to start. The service
             // stops itself once this run leaves the active states.
-            ZidooHandoffService.start(appContext)
+            ZidooHandoffService.start(appContext)?.let { handoffLog.add("Keep-alive service didn't start: $it") }
             // Launched before PlexToZidoo opens, so the screen's pause that the
             // launch causes is already seen as leaving for the Zidoo player.
             setState(runId, ZidooHandoffState.Launched(runId, title))
             zidooPaused = false
             try {
                 openPlexToZidoo(intent)
+                handoffLog.add("PlexToZidoo opened")
             } catch (_: ActivityNotFoundException) {
                 return fail(runId, NOT_INSTALLED_MESSAGE, canPlayInSilo = true)
             } catch (e: RuntimeException) {
@@ -403,6 +422,7 @@ class ZidooHandoffCoordinator(
                         ended == id && zidoo.stop()
                     }
                     Log.i(TAG, "The server ended this playback session; stopped the Zidoo player")
+                    handoffLog.add("The server ended the session; stopped the Zidoo player")
                 }
                 // Silo back in front before any video loaded means the Zidoo
                 // player has closed. Allow a moment in case it is still coming.
@@ -419,7 +439,10 @@ class ZidooHandoffCoordinator(
                         // starting or playing, even while its status says nothing;
                         // giving up then would stop the session under it.
                         keepWaiting = { relay?.servedWithin(RELAY_ACTIVE_WINDOW_MS) == true },
-                        onStarted = { setState(runId, ZidooHandoffState.Playing(runId, title)) },
+                        onStarted = {
+                            handoffLog.add("Zidoo player reports the video")
+                            setState(runId, ZidooHandoffState.Playing(runId, title))
+                        },
                         onSample = { sample ->
                             endWatch.onSample(sample.positionMs, sample.durationMs)
                             if (sample.paused != zidooPaused) {
@@ -439,6 +462,9 @@ class ZidooHandoffCoordinator(
                     returnWatch.cancel()
                 }
             }
+            if (outcome == ZidooMonitorOutcome.PlayerDidNotStart) {
+                handoffLog.add("Zidoo player never reported the video" + (relay?.let { ". Relay: ${it.report()}" } ?: ""))
+            }
             when (outcome) {
                 ZidooMonitorOutcome.PlayerDidNotStart -> return if (relay?.servedForAtLeast(UNTRACKED_PLAYBACK_MIN_MS) == true) {
                     // It streamed for minutes, so it played; its status never
@@ -455,6 +481,7 @@ class ZidooHandoffCoordinator(
                     ),
                 )
                 is ZidooMonitorOutcome.Finished -> {
+                    handoffLog.add("Zidoo player closed at ${outcome.lastPositionMs / 1000} s of ${outcome.durationMs / 1000} s")
                     setState(runId, ZidooHandoffState.Saving(runId, title))
                     if (outcome.lastPositionMs > 0L) {
                         sessionLifecycle.reportPosition(
@@ -481,6 +508,7 @@ class ZidooHandoffCoordinator(
             throw e
         } catch (e: Exception) {
             Log.e(TAG, "Zidoo hand-off failed", e)
+            handoffLog.add("Hand-off failed: $e")
             fail(runId, "Something went wrong handing playback to the Zidoo player.", canPlayInSilo = true)
         } finally {
             relay?.close()
@@ -532,8 +560,10 @@ class ZidooHandoffCoordinator(
         message: String,
         canPlayInSilo: Boolean,
         notPlayed: ZidooHandoffState.NotPlayed? = null,
-    ) =
+    ) {
+        handoffLog.add("Failed: $message")
         setState(runId, ZidooHandoffState.Failed(runId, message, canPlayInSilo, notPlayed))
+    }
 
     /** [request] planned for the Zidoo player's capabilities, when they can be worked out. */
     private suspend fun withZidooCapabilities(request: VideoPlaybackStartRequest): VideoPlaybackStartRequest {
@@ -612,6 +642,7 @@ class ZidooHandoffCoordinator(
                 },
                 client = relayClient,
                 upstreamHeaders = localRouteMarker(upstream, ready),
+                log = { handoffLog.add("Relay: $it") },
             )
         } catch (e: Exception) {
             Log.w(TAG, "Could not start the stream relay; giving the Zidoo player a direct link", e)

@@ -117,6 +117,14 @@ through Silo on the box. That link contains your sign-in, so PlexToZidoo's
 Debug data shows it, and it can expire during a very long film, after which
 seeking fails.
 
+**Settings → External Player → Hand-off Log** shows what happened during the
+latest hand-off, step by step: the session, the stream, PlexToZidoo opening,
+every request the Zidoo player made to Silo's relay and how the server
+answered, and how it ended. It also shows how Silo's last runs ended (on
+Android 11 and later: a crash, low memory, the firmware) and any crash. The
+log survives Silo being closed, so open it after a title doesn't play or Silo
+closes, and take a photo; Up and Down scroll it.
+
 If Silo cannot hand off at all (PlexToZidoo missing, or neither a stream nor a
 file path for the title), it says why and offers **Play in Silo**.
 
@@ -194,6 +202,7 @@ New files (no clash possible):
 | Stream relay for the Zidoo player | `android-shared/.../player/external/ZidooStreamRelay.kt` |
 | Capabilities the server plans for | `android-shared/.../player/external/ZidooPlayerCapabilities.kt`, `androidTvApp/.../player/external/ZidooStartParams.kt` |
 | Interface size on low-density boxes | `androidTvApp/.../player/external/TvInterfaceScale.kt` |
+| Hand-off log and its viewer | `android-shared/.../player/external/ZidooHandoffLog.kt`, `androidTvApp/.../player/external/TvHandoffLogDialog.kt` |
 | Unit tests for all of the above | `android-shared/src/androidUnitTest/.../player/external/` |
 | One hand-off, from server session to final save | `androidTvApp/.../player/external/ZidooHandoffCoordinator.kt` |
 | Keeps Silo alive while the Zidoo player plays | `androidTvApp/.../player/external/ZidooHandoffService.kt` |

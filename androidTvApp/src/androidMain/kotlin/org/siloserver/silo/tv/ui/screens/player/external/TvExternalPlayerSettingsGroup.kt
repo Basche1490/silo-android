@@ -35,6 +35,7 @@ internal fun TvExternalPlayerSettingsGroup(
     val upNextCountdown by settings.upNextCountdownSeconds.collectAsState()
     val directStreamLink by settings.directStreamLink.collectAsState()
     var choosingCountdown by remember { mutableStateOf(false) }
+    var showingLog by remember { mutableStateOf(false) }
     // Checked again on each toggle, so installing PlexToZidoo and coming back is noticed.
     val plexToZidooInstalled = remember(enabled) { isPlexToZidooInstalled(context) }
     SettingsGroup(title = "External Player") {
@@ -85,6 +86,18 @@ internal fun TvExternalPlayerSettingsGroup(
                 "PlexToZidoo's Debug data shows, and it can expire during a very long film, after which " +
                 "seeking fails.",
         )
+        SettingsValueRow(
+            label = "Hand-off Log",
+            value = "View",
+            onClick = { showingLog = true },
+        )
+        SettingsFooterText(
+            text = "What Silo saw during the latest hand-off to the Zidoo player, and how Silo last closed. " +
+                "Open it after a title doesn't play.",
+        )
+    }
+    if (showingLog) {
+        TvHandoffLogDialog(onDismiss = { showingLog = false })
     }
     if (choosingCountdown) {
         TvSettingsPickerSheet(

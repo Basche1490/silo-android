@@ -18,6 +18,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import org.koin.android.ext.android.inject
+import org.siloserver.silo.common.player.external.ZidooHandoffLog
 
 /**
  * Keeps Silo's process alive while the Zidoo player has the screen.
@@ -36,6 +37,7 @@ import org.koin.android.ext.android.inject
 class ZidooHandoffService : Service() {
 
     private val coordinator: ZidooHandoffCoordinator by inject()
+    private val handoffLog: ZidooHandoffLog by inject()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var watcher: Job? = null
 
@@ -43,6 +45,7 @@ class ZidooHandoffService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         promote()
+        handoffLog.add("Keep-alive service running")
         // Each start belongs to a newer run. stopSelf(startId) is ignored once
         // a later start has arrived, so an older run ending cannot take the
         // service away from the run that is playing now.
@@ -55,6 +58,7 @@ class ZidooHandoffService : Service() {
     }
 
     override fun onDestroy() {
+        handoffLog.add("Keep-alive service stopped")
         scope.cancel()
         super.onDestroy()
     }
@@ -88,18 +92,24 @@ class ZidooHandoffService : Service() {
         private const val CHANNEL_ID = "zidoo_handoff"
         private const val NOTIFICATION_ID = 4_210
 
-        /** Starts the service. Playback still works without it, just less reliably, so failures are logged only. */
-        fun start(context: Context) {
+        /**
+         * Starts the service. Playback still works without it, just less
+         * reliably, so a failure is only logged; returns what went wrong, or
+         * null when it started.
+         */
+        fun start(context: Context): String? {
             val intent = Intent(context, ZidooHandoffService::class.java)
-            try {
+            return try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     context.startForegroundService(intent)
                 } else {
                     context.startService(intent)
                 }
+                null
             } catch (e: RuntimeException) {
                 // IllegalStateException, or ForegroundServiceStartNotAllowedException on Android 12+.
                 Log.w(TAG, "Could not keep Silo alive during Zidoo playback", e)
+                e.toString()
             }
         }
     }

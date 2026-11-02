@@ -64,6 +64,8 @@ class ZidooStreamRelay(
     client: OkHttpClient = OkHttpClient(),
     /** Headers added to every request to the server, such as Silo's local-route marker. */
     private val upstreamHeaders: Map<String, String> = emptyMap(),
+    /** Where the relay notes connections, requests and answers; never with the token or secret path. */
+    private val log: (String) -> Unit = {},
     /** Upper bound for waiting on a renewed token after the server refused one. */
     private val tokenRenewalWaitMs: Long = 15_000L,
 ) : Closeable {
@@ -92,6 +94,9 @@ class ZidooStreamRelay(
 
     /** Requests for the video the player has made. */
     private val requestCount = AtomicInteger(0)
+
+    /** Connections the player has opened, counted for [log]. */
+    private val connectionCount = AtomicInteger(0)
 
     /** The longest the server took to answer a request, connecting included. */
     @Volatile
@@ -132,6 +137,7 @@ class ZidooStreamRelay(
     val url: String = "http://$LOOPBACK:${server.localPort}$path"
 
     init {
+        log("listening on 127.0.0.1:${server.localPort}")
         Thread({ acceptLoop() }, "ZidooStreamRelay-accept").apply { isDaemon = true }.start()
     }
 
@@ -147,11 +153,14 @@ class ZidooStreamRelay(
         while (!closed) {
             val socket = try {
                 server.accept()
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                if (!closed) log("stopped accepting connections (${describe(e)})")
                 break
             }
+            val connection = connectionCount.incrementAndGet()
             if (active.incrementAndGet() > MAX_CONNECTIONS) {
                 active.decrementAndGet()
+                log("connection $connection refused: $MAX_CONNECTIONS already open")
                 socket.closeQuietly()
                 continue
             }
@@ -159,7 +168,7 @@ class ZidooStreamRelay(
                 // Nothing may escape a relay thread: an uncaught exception
                 // would end Silo's process, and the film with it.
                 try {
-                    serve(socket)
+                    serve(socket, connection)
                 } catch (e: Exception) {
                     Log.w(TAG, "Relay request failed", e)
                 } finally {
@@ -170,18 +179,32 @@ class ZidooStreamRelay(
         }
     }
 
-    private fun serve(socket: Socket) {
+    private fun serve(socket: Socket, connection: Int) {
         socket.soTimeout = REQUEST_READ_TIMEOUT_MS
         val input = BufferedInputStream(socket.getInputStream())
         val output = socket.getOutputStream()
-        val request = readRequest(input) ?: return
+        val request = readRequest(input)
+        if (request == null) {
+            log("connection $connection closed without a request")
+            return
+        }
         if (request.method != "GET" && request.method != "HEAD") {
+            log("connection $connection: ${request.method.take(12)} refused (405)")
             return writeSimple(output, 405, "Method Not Allowed")
         }
         if (request.target.substringBefore('?') != path) {
+            log("connection $connection: request for another address refused (404)")
             return writeSimple(output, 404, "Not Found")
         }
-        requestCount.incrementAndGet()
+        val number = requestCount.incrementAndGet()
+        val logged = number <= MAX_LOGGED_REQUESTS
+        if (logged) {
+            log("request $number: ${request.method}" + (request.headers["range"]?.let { " $it" } ?: ""))
+        } else if (number == MAX_LOGGED_REQUESTS + 1) {
+            log("further requests are not logged")
+        }
+        val sent = longArrayOf(0L)
+        val askedAt = System.nanoTime()
         var response: Response? = null
         var responseStarted = false
         try {
@@ -196,6 +219,7 @@ class ZidooStreamRelay(
             }
             val code = response.code
             if (code >= 400) lastProblem = "Your server refused the video (HTTP $code)."
+            if (logged) log("request $number: server answered $code in ${(System.nanoTime() - askedAt) / 1_000_000} ms")
             val header = StringBuilder()
                 .append("HTTP/1.1 ").append(code).append(' ')
                 .append(response.message.takeIf { it.isNotBlank() && '\n' !in it && '\r' !in it } ?: "Status")
@@ -207,22 +231,26 @@ class ZidooStreamRelay(
             responseStarted = true
             output.write(header.toString().toByteArray(Charsets.ISO_8859_1))
             if (request.method == "GET") {
-                response.body?.byteStream()?.use { copyCounting(it, output, media = code < 300) }
+                response.body?.byteStream()?.use { copyCounting(it, output, media = code < 300, sent) }
             }
             output.flush()
+            if (logged) log("request $number: sent ${megabytes(sent[0])} MB, complete")
         } catch (e: IOException) {
             // The server or the player went away. Once a response has started
             // there is nothing more to say; the player reconnects if it can.
             if (!responseStarted) {
                 if (!closed) lastProblem = "Silo couldn't get the video from your server (${describe(e)})."
+                lastProblem?.let { if (logged) log("request $number: $it") }
                 writeSimple(output, 502, "Bad Gateway")
+            } else if (logged) {
+                log("request $number: stopped after ${megabytes(sent[0])} MB (${describe(e)})")
             }
         } finally {
             response?.close()
         }
     }
 
-    private fun copyCounting(from: InputStream, to: OutputStream, media: Boolean) {
+    private fun copyCounting(from: InputStream, to: OutputStream, media: Boolean, sent: LongArray) {
         val buffer = ByteArray(BUFFER_BYTES)
         while (true) {
             val read = try {
@@ -238,6 +266,7 @@ class ZidooStreamRelay(
                 lastServedAtMs = now
             }
             to.write(buffer, 0, read)
+            sent[0] += read
         }
     }
 
@@ -315,7 +344,7 @@ class ZidooStreamRelay(
     }
 
     /** [e] in a few words for [report]: its kind, and its message when it has one. */
-    private fun describe(e: IOException): String =
+    private fun describe(e: Throwable): String =
         listOfNotNull(e.javaClass.simpleName, e.message?.take(160)).joinToString(": ")
 
     private fun Socket.closeQuietly() {
@@ -330,6 +359,7 @@ class ZidooStreamRelay(
         private const val TAG = "ZidooStreamRelay"
         private const val LOOPBACK = "127.0.0.1"
         private const val MAX_CONNECTIONS = 16
+        private const val MAX_LOGGED_REQUESTS = 30
         private const val MAX_HEADERS = 64
         private const val MAX_LINE = 8_192
         private const val BUFFER_BYTES = 256 * 1024
@@ -344,6 +374,8 @@ class ZidooStreamRelay(
         private val RELAYED_RESPONSE_HEADERS = listOf(
             "Content-Type", "Content-Length", "Content-Range", "Accept-Ranges", "ETag", "Last-Modified",
         )
+
+        private fun megabytes(bytes: Long): String = String.format(Locale.ROOT, "%.1f", bytes / 1_048_576.0)
 
         private fun randomSecret(): String {
             val bytes = ByteArray(16).also { SecureRandom().nextBytes(it) }

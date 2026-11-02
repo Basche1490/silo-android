@@ -1,12 +1,14 @@
 package org.siloserver.silo.tv.ui.screens.player.external
 
 import android.content.Context
+import java.io.File
 import org.koin.android.ext.koin.androidContext
 import org.koin.core.qualifier.named
 import org.koin.dsl.module
 import org.siloserver.silo.common.di.PLAYER_TRANSPORT_OKHTTP_QUALIFIER
 import org.siloserver.silo.common.player.external.ExternalPlayerSettings
 import org.siloserver.silo.common.player.external.HttpZidooPlayerApi
+import org.siloserver.silo.common.player.external.ZidooHandoffLog
 import org.siloserver.silo.common.player.external.ZidooPlayerApi
 import org.siloserver.silo.common.profiles.ProfileAwayTracker
 
@@ -38,6 +40,14 @@ val externalPlayerTvModule = module {
         )
     }
     single<ZidooPlayerApi> { HttpZidooPlayerApi() }
+    // Created when Silo starts, so it records a crash, and Silo starting again
+    // after a hand-off, even before anything else asks for it.
+    single(createdAtStart = true) {
+        ZidooHandoffLog(File(androidContext().filesDir, "zidoo-handoff.log")).also { log ->
+            log.recordCrashes()
+            log.add("Silo started")
+        }
+    }
     single { ZidooStartParams(detector = get(), playerSettings = get()) }
     single {
         val startParams = get<ZidooStartParams>()
@@ -57,6 +67,7 @@ val externalPlayerTvModule = module {
             onPlaybackActivityChanged = { get<ProfileAwayTracker>().onRemotePlaybackChanged() },
             // The relay connects as Silo's own video player does.
             relayClient = get(PLAYER_TRANSPORT_OKHTTP_QUALIFIER),
+            handoffLog = get(),
         )
     }
 }
