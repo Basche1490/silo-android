@@ -42,8 +42,6 @@ internal fun TvExternalPlayerSettingsGroup(
     val directStreamLink by settings.directStreamLink.collectAsState()
     var choosingCountdown by remember { mutableStateOf(false) }
     var showingLog by remember { mutableStateOf(false) }
-    val keepAliveMode by settings.keepAliveMode.collectAsState()
-    var choosingKeepAlive by remember { mutableStateOf(false) }
     // Checked again on each toggle, so installing PlexToZidoo and coming back is noticed.
     val plexToZidooInstalled = remember(enabled) { isPlexToZidooInstalled(context) }
     SettingsGroup(title = "External Player") {
@@ -110,16 +108,6 @@ internal fun TvExternalPlayerSettingsGroup(
                 "seeking fails.",
         )
         SettingsValueRow(
-            label = "Keep-Alive Service",
-            value = keepAliveLabel(keepAliveMode),
-            onClick = { choosingKeepAlive = true },
-            enabled = enabled,
-        )
-        SettingsFooterText(
-            text = "Experimental: how Silo keeps running behind the Zidoo player. If the Zidoo closes Silo " +
-                "after theme music has played, try Data Sync, then None, and check the Hand-off Log.",
-        )
-        SettingsValueRow(
             label = "Hand-off Log",
             value = "View",
             onClick = { showingLog = true },
@@ -131,18 +119,6 @@ internal fun TvExternalPlayerSettingsGroup(
     }
     if (showingLog) {
         TvHandoffLogDialog(onDismiss = { showingLog = false })
-    }
-    if (choosingKeepAlive) {
-        TvSettingsPickerSheet(
-            title = "Keep-Alive Service",
-            options = ExternalPlayerSettings.KEEP_ALIVE_MODES.map { PickerOption(it.toString(), keepAliveLabel(it)) },
-            selectedId = keepAliveMode.toString(),
-            onSelect = { id ->
-                id.toIntOrNull()?.let(settings::setKeepAliveMode)
-                choosingKeepAlive = false
-            },
-            onDismiss = { choosingKeepAlive = false },
-        )
     }
     if (choosingCountdown) {
         TvSettingsPickerSheet(
@@ -173,12 +149,6 @@ internal fun TvExternalPlayerSettingsGroup(
                 "screen density, such as Zidoo. Turn off to use the player's own size.",
         )
     }
-}
-
-private fun keepAliveLabel(mode: Int): String = when (mode) {
-    ExternalPlayerSettings.KEEP_ALIVE_DATA_SYNC -> "Data Sync"
-    ExternalPlayerSettings.KEEP_ALIVE_NONE -> "None"
-    else -> "Media Playback"
 }
 
 private fun upNextCountdownLabel(seconds: Int): String = when (seconds) {

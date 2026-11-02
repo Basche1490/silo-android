@@ -26,7 +26,6 @@ class ExternalPlayerSettingsTest {
         assertEquals(ZidooSkipSettings(skipIntro = true, skipCredits = false), settings.skipSettings())
         assertEquals(10, settings.upNextCountdownSeconds.value)
         assertEquals(false, settings.directStreamLink.value)
-        assertEquals(ExternalPlayerSettings.KEEP_ALIVE_MEDIA, settings.keepAliveMode.value)
     }
 
     @Test
@@ -40,9 +39,6 @@ class ExternalPlayerSettingsTest {
             // Not one of the offered lengths: ignored.
             setUpNextCountdownSeconds(7)
             setDirectStreamLink(true)
-            setKeepAliveMode(ExternalPlayerSettings.KEEP_ALIVE_NONE)
-            // Not a mode: ignored.
-            setKeepAliveMode(7)
         }
 
         val reloaded = ExternalPlayerSettings(storage)
@@ -51,6 +47,5 @@ class ExternalPlayerSettingsTest {
         assertEquals(ZidooSkipSettings(skipIntro = false, skipCredits = true), reloaded.skipSettings())
         assertEquals(5, reloaded.upNextCountdownSeconds.value)
         assertEquals(true, reloaded.directStreamLink.value)
-        assertEquals(ExternalPlayerSettings.KEEP_ALIVE_NONE, reloaded.keepAliveMode.value)
     }
 }

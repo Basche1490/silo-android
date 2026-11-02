@@ -166,8 +166,6 @@ find all of them.
 <queries>
     <package android:name="com.hpn789.plextozidoo" />
 </queries>
-<!-- [zidoo-fork] External Player: the keep-alive service may run as data sync. -->
-<uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 ```
 
 and inside `<application>`, with the other services:
@@ -178,7 +176,7 @@ and inside `<application>`, with the other services:
 <service
     android:name=".ui.screens.player.external.ZidooHandoffService"
     android:exported="false"
-    android:foregroundServiceType="mediaPlayback|dataSync" />
+    android:foregroundServiceType="mediaPlayback" />
 ```
 
 **`androidTvApp/src/androidMain/kotlin/org/siloserver/silo/tv/MainTvActivity.kt`**,

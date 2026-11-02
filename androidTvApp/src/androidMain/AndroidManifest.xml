@@ -22,8 +22,6 @@
     <queries>
         <package android:name="com.hpn789.plextozidoo" />
     </queries>
-    <!-- [zidoo-fork] External Player: the keep-alive service may run as data sync. -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <application
         android:name=".SiloTvApplication"
@@ -109,7 +107,7 @@
         <service
             android:name=".ui.screens.player.external.ZidooHandoffService"
             android:exported="false"
-            android:foregroundServiceType="mediaPlayback|dataSync" />
+            android:foregroundServiceType="mediaPlayback" />
 
         <!-- Disable WorkManager's androidx.startup auto-init so our explicit
              `WorkManager.initialize(this, workManagerConfiguration)` call in
