@@ -218,7 +218,7 @@ Edits to Silo's own files, each marked `[zidoo-fork]` (`git grep "\[zidoo-fork\]
 | File | Change |
 | --- | --- |
 | `androidTvApp/.../tv/MainTvActivity.kt` | `attachBaseContext` applies `TvInterfaceScale.overrideConfiguration(...)` |
-| `androidTvApp/src/androidMain/AndroidManifest.xml` | `<queries>` for PlexToZidoo; the foreground service |
+| `androidTvApp/src/androidMain/AndroidManifest.xml` | `<queries>` for PlexToZidoo; the data sync foreground-service permission; the foreground service (media playback or data sync) |
 | `androidTvApp/.../tv/di/AndroidTvModule.kt` | `includes(externalPlayerTvModule)`; `isCasting = ZidooHandoffCoordinator::isHandingOffNow` on the profile tracker, so Zidoo playback counts as using the profile; `bufferingQualityMode = { ZidooHandoffCoordinator.bufferingQualityModeNow() }` on the session manager, so a hand-off ignores learned bandwidth limits |
 | `androidTvApp/.../tv/ui/navigation/TvAppNavigation.kt` | `handOffToZidooIfEnabled(...)` in the `TvRoute.Player` destination, just before Silo's player is composed; its `onPlayNextEpisode` opens the next episode's `TvRoute.Player` in place of this one |
 | `androidTvApp/.../tv/ui/screens/settings/TvSettingsScreen.kt` | `item { TvExternalPlayerSettingsGroup() }` |

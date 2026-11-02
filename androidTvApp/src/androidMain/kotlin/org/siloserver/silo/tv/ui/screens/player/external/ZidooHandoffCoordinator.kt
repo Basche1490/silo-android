@@ -384,7 +384,11 @@ class ZidooHandoffCoordinator(
             // Silo is still in the foreground here, which Android requires
             // before it allows a foreground service to start. The service
             // stops itself once this run leaves the active states.
-            ZidooHandoffService.start(appContext)?.let { handoffLog.add("Keep-alive service didn't start: $it") }
+            if (settings.keepAliveMode.value == ExternalPlayerSettings.KEEP_ALIVE_NONE) {
+                handoffLog.add("Keep-alive service off (Settings → External Player)")
+            } else {
+                ZidooHandoffService.start(appContext)?.let { handoffLog.add("Keep-alive service didn't start: $it") }
+            }
             // Launched before PlexToZidoo opens, so the screen's pause that the
             // launch causes is already seen as leaving for the Zidoo player.
             setState(runId, ZidooHandoffState.Launched(runId, title))

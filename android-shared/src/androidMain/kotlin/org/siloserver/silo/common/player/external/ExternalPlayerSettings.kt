@@ -56,6 +56,20 @@ class ExternalPlayerSettings(private val storage: Storage) {
      */
     val directStreamLink: StateFlow<Boolean> = _directStreamLink.asStateFlow()
 
+    private val _keepAliveMode = MutableStateFlow(
+        storage.readInt(KEY_KEEP_ALIVE)?.takeIf { it in KEEP_ALIVE_MODES } ?: KEEP_ALIVE_MEDIA,
+    )
+
+    /**
+     * How Silo keeps running while the Zidoo player plays: a foreground
+     * service declared as media playback ([KEEP_ALIVE_MEDIA], the default), one
+     * declared as data sync ([KEEP_ALIVE_DATA_SYNC]), or none
+     * ([KEEP_ALIVE_NONE]). Experimental: once Silo has played theme music, the
+     * Zidoo firmware force-stops it when the Zidoo player starts, and this
+     * finds out whether the service's type is what it looks for.
+     */
+    val keepAliveMode: StateFlow<Int> = _keepAliveMode.asStateFlow()
+
     fun setEnabled(value: Boolean) = set(KEY_ENABLED, _enabled, value)
 
     fun setSkipIntro(value: Boolean) = set(KEY_SKIP_INTRO, _skipIntro, value)
@@ -65,6 +79,12 @@ class ExternalPlayerSettings(private val storage: Storage) {
     fun setFitToTv(value: Boolean) = set(KEY_FIT_TO_TV, _fitToTv, value)
 
     fun setDirectStreamLink(value: Boolean) = set(KEY_DIRECT_STREAM_LINK, _directStreamLink, value)
+
+    fun setKeepAliveMode(value: Int) {
+        if (value !in KEEP_ALIVE_MODES) return
+        storage.writeInt(KEY_KEEP_ALIVE, value)
+        _keepAliveMode.value = value
+    }
 
     fun setUpNextCountdownSeconds(value: Int) {
         if (value !in UP_NEXT_COUNTDOWN_OPTIONS) return
@@ -89,6 +109,12 @@ class ExternalPlayerSettings(private val storage: Storage) {
         private const val KEY_SKIP_CREDITS = "zidoo_skip_credits"
         private const val KEY_UP_NEXT_COUNTDOWN = "zidoo_up_next_countdown_seconds"
         private const val KEY_DIRECT_STREAM_LINK = "zidoo_direct_stream_link"
+        private const val KEY_KEEP_ALIVE = "zidoo_keep_alive_mode"
+
+        const val KEEP_ALIVE_MEDIA = 0
+        const val KEEP_ALIVE_DATA_SYNC = 1
+        const val KEEP_ALIVE_NONE = 2
+        val KEEP_ALIVE_MODES = listOf(KEEP_ALIVE_MEDIA, KEEP_ALIVE_DATA_SYNC, KEEP_ALIVE_NONE)
 
         /** The lengths Settings offers for the Up Next countdown, in seconds. */
         val UP_NEXT_COUNTDOWN_OPTIONS = listOf(0, 3, 5, 10, 15, 20, 30)
