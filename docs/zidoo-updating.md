@@ -247,6 +247,15 @@ group:
 item { TvExternalPlayerSettingsGroup() }
 ```
 
+**`android-shared/src/androidMain/kotlin/org/siloserver/silo/common/thememusic/ThemeMusicService.kt`**,
+one function after `hide`:
+
+```kotlin
+// [zidoo-fork] Playback handed to the Zidoo player is starting: end the theme
+// at once, as Silo's own player starting does, so Silo holds no audio output.
+fun interrupt() = coordinator.interrupt()
+```
+
 ### Silo code the fork depends on
 
 A clean merge can still break the fork if Silo renames or reshapes code the
@@ -283,6 +292,9 @@ are the dependencies to check:
   crosses the credits start; if Silo changes that rule, follow it.
 - **Profiles:** `ProfileAwayTracker`'s `isCasting` parameter and
   `onRemotePlaybackChanged`.
+- **Theme music:** `ThemeMusicService` (a Koin single) and
+  `ThemeMusicCoordinator.interrupt`, which the `[zidoo-fork]` `interrupt()`
+  above calls.
 - **Screens and settings:** `TvDialogCard`, `TvPlayerChrome`, `TvPlayerType`,
   `SettingsGroup`, `SettingsToggleRow`, `SettingsValueRow`,
   `SettingsFooterText`, `TvSettingsPickerSheet` and `PickerOption`.
@@ -326,6 +338,13 @@ not undo them; the unit tests named in brackets guard the ones they can.
   the relay before the player asked for the video, or, by Direct Stream Link,
   stopped tracking a film that went on playing, so nothing was saved. A
   player that closes without playing still ends the wait within seconds.
+- **Theme music is silenced before the Zidoo player starts.** A detail page's
+  theme fades out and keeps its audio output for two more seconds, and the
+  Zidoo firmware force-stops an app still holding audio when its player starts
+  (the Hand-off Log showed "force-stopped … with its keep-alive service"). That
+  took the relay and the progress tracking with it, for every title with a
+  theme. The hand-off calls `ThemeMusicService.interrupt()` just before
+  PlexToZidoo opens, as Silo's own player does when it starts.
 - **Resume lands on the resume point.** The Zidoo player can start a large
   file at 0:00; the monitor moves it to the resume point and saves nothing
   short of it (`ZidooPlaybackMonitorTest`).

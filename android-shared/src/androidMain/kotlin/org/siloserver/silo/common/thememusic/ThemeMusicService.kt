@@ -91,6 +91,10 @@ class ThemeMusicService(
     /** [page] left the screen or the app went to the background. Main thread. */
     fun hide(page: Any) = coordinator.hide(page)
 
+    // [zidoo-fork] Playback handed to the Zidoo player is starting: end the theme
+    // at once, as Silo's own player starting does, so Silo holds no audio output.
+    fun interrupt() = coordinator.interrupt()
+
     private suspend fun readCapability(): Boolean? = when (val result = api.capability()) {
         is ApiResult.Success -> result.data.isAvailable
         // A server without the route predates themes.

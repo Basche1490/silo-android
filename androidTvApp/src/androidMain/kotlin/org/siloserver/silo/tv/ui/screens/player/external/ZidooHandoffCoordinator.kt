@@ -164,6 +164,12 @@ class ZidooHandoffCoordinator(
     private val relayClient: OkHttpClient,
     /** Settings → External Player → Hand-off Log: what each step of the latest hand-off did. */
     private val handoffLog: ZidooHandoffLog,
+    /**
+     * Ends detail-page theme music at once. A theme fading out still holds the
+     * audio output, and the Zidoo firmware force-stops an app that does when its
+     * player starts, which takes the relay and the progress tracking with it.
+     */
+    private val stopThemeMusic: () -> Unit,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
@@ -385,6 +391,14 @@ class ZidooHandoffCoordinator(
             // before it allows a foreground service to start. The service
             // stops itself once this run leaves the active states.
             ZidooHandoffService.start(appContext)?.let { handoffLog.add("Keep-alive service didn't start: $it") }
+            // Release the detail page's theme music before the Zidoo player
+            // starts; a theme still fading out holds the audio output.
+            try {
+                stopThemeMusic()
+                handoffLog.add("Theme music stopped")
+            } catch (e: RuntimeException) {
+                handoffLog.add("Couldn't stop theme music: $e")
+            }
             // Launched before PlexToZidoo opens, so the screen's pause that the
             // launch causes is already seen as leaving for the Zidoo player.
             setState(runId, ZidooHandoffState.Launched(runId, title))
