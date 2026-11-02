@@ -220,7 +220,6 @@ Edits to Silo's own files, each marked `[zidoo-fork]` (`git grep "\[zidoo-fork\]
 | `androidTvApp/.../tv/di/AndroidTvModule.kt` | `includes(externalPlayerTvModule)`; `isCasting = ZidooHandoffCoordinator::isHandingOffNow` on the profile tracker, so Zidoo playback counts as using the profile; `bufferingQualityMode = { ZidooHandoffCoordinator.bufferingQualityModeNow() }` on the session manager, so a hand-off ignores learned bandwidth limits |
 | `androidTvApp/.../tv/ui/navigation/TvAppNavigation.kt` | `handOffToZidooIfEnabled(...)` in the `TvRoute.Player` destination, just before Silo's player is composed; its `onPlayNextEpisode` opens the next episode's `TvRoute.Player` in place of this one |
 | `androidTvApp/.../tv/ui/screens/settings/TvSettingsScreen.kt` | `item { TvExternalPlayerSettingsGroup() }` |
-| `android-shared/.../common/thememusic/ThemeMusicService.kt` | `interrupt()`, so the hand-off ends theme music before the Zidoo player starts |
 
 ## How it works
 
