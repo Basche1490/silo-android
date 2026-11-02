@@ -25,11 +25,16 @@ name: Zidoo TV APK
 # slower on a Zidoo. It carries the version of Silo's newest tester build
 # (vX.Y.Z-beta.B tag) and that build's versionCode, which only ever goes up, so
 # each APK installs over the last.
+#
+# After each successful run, zidoo-prune-releases.yml deletes all but the
+# newest three releases. Each run also resets GitHub's 60-day inactivity timer,
+# which would otherwise pause the monthly schedule in a fork nobody pushes to.
 
 on:
   schedule:
-    # Mondays 09:17 UTC. A week with no new Silo or fork commits builds nothing.
-    - cron: "17 9 * * 1"
+    # The 1st of each month, 09:17 UTC. A month with no new Silo or fork
+    # commits builds nothing.
+    - cron: "17 9 1 * *"
   workflow_dispatch:
     inputs:
       merge_upstream:
@@ -47,6 +52,8 @@ on:
 permissions:
   contents: write
   issues: write
+  # Lets each run re-enable this workflow, which keeps its schedule alive.
+  actions: write
 
 concurrency:
   group: zidoo-tv-apk-${{ github.ref }}
@@ -67,6 +74,13 @@ jobs:
       UPSTREAM_URL: https://github.com/Silo-Server/silo-android.git
 
     steps:
+      - name: Keep the monthly schedule active
+        # GitHub pauses scheduled workflows in a public repository after 60
+        # days without activity. Enabling the workflow again resets that timer;
+        # it changes nothing else. A failure here must not stop the build.
+        continue-on-error: true
+        run: gh api --method PUT "repos/$GITHUB_REPOSITORY/actions/workflows/zidoo-tv-apk.yml/enable"
+
       - name: Check out sources
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -259,3 +273,12 @@ jobs:
             --notes "$notes" \
             --latest
           echo "Released $tag: https://github.com/$GITHUB_REPOSITORY/releases/latest/download/silo-tv-zidoo.apk" >> "$GITHUB_STEP_SUMMARY"
+
+  prune:
+    name: Delete old releases
+    # After a successful run, keep the newest three releases and delete the
+    # rest. The release marked Latest is always kept.
+    needs: apk
+    uses: ./.github/workflows/zidoo-prune-releases.yml
+    with:
+      keep: 3

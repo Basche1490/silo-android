@@ -137,14 +137,17 @@ One-time setup on your fork:
 
 How updates arrive:
 
-- Every Monday the workflow fetches the newest Silo code, merges it into a
-  temporary copy of your branch, runs the External Player tests, builds, and
-  publishes a release. A week with no new commits builds nothing.
+- On the 1st of every month the workflow fetches the newest Silo code, merges
+  it into a temporary copy of your branch, runs the External Player tests,
+  builds, and publishes a release. A month with no new commits builds nothing.
+- After each successful run it deletes all but the newest three releases,
+  always keeping the one the Downloader address serves.
 - Run it any time from **Actions → Zidoo TV APK → Run workflow**.
 - The workflow never changes your branch. To bring the branch itself up to
   date, use **Sync fork** on the fork's main page; that also triggers a build.
-- GitHub pauses scheduled workflows in repositories with no activity for 60
-  days. Re-enable it from the Actions tab if that happens.
+- GitHub pauses scheduled workflows in a public repository after 60 days
+  without activity. Each run resets that timer; if the Actions tab ever says
+  the workflow was disabled anyway, re-enable it there.
 
 The APK is a release build, the same kind as Silo's own sideload APK:
 optimized and compiled ahead of time by Android, so it runs smoothly on a

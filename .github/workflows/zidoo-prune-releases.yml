@@ -1,12 +1,19 @@
 name: Zidoo prune releases
 
 # Deletes old Zidoo TV APK releases, and their tags, keeping the newest few.
-# Run it from Actions → Zidoo prune releases → Run workflow. The release marked
-# Latest, the one the Downloader address serves, is always kept. Only
-# releases whose tag starts with "zidoo-" are touched.
+# The Zidoo TV APK workflow runs it after each successful build, keeping three;
+# run it by hand from Actions → Zidoo prune releases → Run workflow. The
+# release marked Latest, the one the Downloader address serves, is always
+# kept. Only releases whose tag starts with "zidoo-" are touched.
 
 on:
   workflow_dispatch:
+    inputs:
+      keep:
+        description: How many of the newest releases to keep
+        type: number
+        default: 3
+  workflow_call:
     inputs:
       keep:
         description: How many of the newest releases to keep
