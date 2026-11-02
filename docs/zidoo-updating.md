@@ -247,6 +247,15 @@ group:
 item { TvExternalPlayerSettingsGroup() }
 ```
 
+**`android-shared/src/androidMain/kotlin/org/siloserver/silo/common/thememusic/ThemeMusicService.kt`**,
+experimental, in `ExoThemeAudio`'s `setAudioAttributes`:
+
+```kotlin
+// [zidoo-fork] Experiment: take no audio focus, in case that is why the Zidoo
+// firmware force-stops Silo, after a theme played, when the Zidoo player starts.
+/* handleAudioFocus = */ false,
+```
+
 ### Silo code the fork depends on
 
 A clean merge can still break the fork if Silo renames or reshapes code the

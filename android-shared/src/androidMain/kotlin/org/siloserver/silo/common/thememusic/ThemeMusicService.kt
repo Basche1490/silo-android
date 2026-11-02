@@ -176,7 +176,9 @@ private class ExoThemeAudio(
                 .setUsage(C.USAGE_MEDIA)
                 .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
                 .build(),
-            /* handleAudioFocus = */ true,
+            // [zidoo-fork] Experiment: take no audio focus, in case that is why the Zidoo
+            // firmware force-stops Silo, after a theme played, when the Zidoo player starts.
+            /* handleAudioFocus = */ false,
         )
         .setHandleAudioBecomingNoisy(true)
         .build()
