@@ -275,7 +275,10 @@ because Zidoo firmware only lets a couple of apps stay in the background.
   lasts until Silo is opened again. Keep **Settings → Theme Music** off while
   you use the Zidoo player; Settings → External Player offers to turn it off.
   Playing something in Silo's own player probably has the same effect until
-  Silo is opened again.
+  Silo is opened again. Nothing in Silo avoids it: stopping the theme early,
+  waiting, changing or dropping the keep-alive service and playing without
+  audio focus were all tried. ZidooPlexMod plays theme music in ZDMC because
+  the firmware spares Zidoo's own apps.
 - The interface size is set when Silo opens. If the box changes its interface
   resolution while Silo is open, reopen Silo.
 - A multi-part film (CD1/CD2 files) plays only the part you start in.

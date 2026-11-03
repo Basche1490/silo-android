@@ -247,15 +247,6 @@ group:
 item { TvExternalPlayerSettingsGroup() }
 ```
 
-**`android-shared/src/androidMain/kotlin/org/siloserver/silo/common/thememusic/ThemeMusicService.kt`**,
-experimental, in `ExoThemeAudio`'s `setAudioAttributes`:
-
-```kotlin
-// [zidoo-fork] Experiment: take no audio focus, in case that is why the Zidoo
-// firmware force-stops Silo, after a theme played, when the Zidoo player starts.
-/* handleAudioFocus = */ false,
-```
-
 ### Silo code the fork depends on
 
 A clean merge can still break the fork if Silo renames or reshapes code the
@@ -342,10 +333,16 @@ not undo them; the unit tests named in brackets guard the ones they can.
   keep-alive service included, about two seconds after the Zidoo player starts.
   The Hand-off Log showed it ("force-stopped … due to from pid …" by a system
   process) on every title after a theme song had played, however long ago, and
-  never after Silo was opened again with Theme Music off. Releasing the theme's
-  audio before the hand-off made no difference, so the fork doesn't change
-  Silo's theme music code; Settings → External Player warns while Theme Music
-  is on and offers to turn it off.
+  never after Silo was opened again with Theme Music off. None of these changed
+  it, each tested on a Z9X 8K (Android 11) in November 2026: releasing the
+  theme's audio just before the hand-off; waiting over a minute after the theme
+  stopped; running the keep-alive service as data sync instead of media
+  playback, or running none; playing the theme without audio focus. ZidooPlexMod
+  in ZDMC plays theme music and keeps working only because ZDMC is Zidoo's own
+  app; the add-on hands off exactly as Silo does. So the fork doesn't change
+  Silo's theme music code; Settings → External Player warns while Theme Music is
+  on and offers to turn it off. Don't spend another update on it unless Zidoo
+  firmware changes.
 - **Resume lands on the resume point.** The Zidoo player can start a large
   file at 0:00; the monitor moves it to the resume point and saves nothing
   short of it (`ZidooPlaybackMonitorTest`).
