@@ -23,57 +23,77 @@ data class SkipAction(val kind: SkipKind, val targetMs: Long)
 /**
  * Decides when the Zidoo player should jump over an intro or the credits.
  *
- * The rules follow the ZidooPlexMod add-on, so behaviour matches the setup this
- * client is meant to replace:
- * - A marker triggers while the position is inside it, and the jump goes to the
- *   marker's end.
+ * The rules follow the ZidooPlexMod add-on and Silo's own player:
+ * - A file may have several intros or several credits ranges (for example two
+ *   credits ranges around a mid-credits scene). Each one triggers while the
+ *   position is inside it, and the jump goes to that range's own end, never
+ *   over the content between two of them. Where ranges overlap, the one that
+ *   started last is the one playing, as in Silo's `MarkerTimeline`.
  * - A jump never lands closer than [FINAL_MARGIN_MS] to the end of the file, so
  *   the player still reaches its natural end (and the server sees the title
  *   finished) rather than being left parked on the last frame.
- * - Each marker triggers once per playback. Seeking back into it afterwards
- *   does not skip it again.
+ * - Each range triggers once per playback. Seeking back into it afterwards
+ *   does not skip it again. Ranges that end together count as one.
  */
 class ZidooSkipPlanner(
-    private val intro: SkipRange?,
-    private val credits: SkipRange?,
+    intros: List<SkipRange>,
+    credits: List<SkipRange>,
     private val settings: ZidooSkipSettings,
 ) {
-    private val done = mutableSetOf<SkipKind>()
+    private val ranges: Map<SkipKind, List<SkipRange>> = mapOf(
+        SkipKind.INTRO to usableInOrder(intros),
+        SkipKind.CREDITS to usableInOrder(credits),
+    )
+
+    /** The ends, in milliseconds, of the ranges already skipped, per kind. */
+    private val done = mutableMapOf<SkipKind, MutableSet<Long>>()
+
+    /** The end of the range each kind skipped last, for [release]. */
+    private val lastSkipped = mutableMapOf<SkipKind, Long>()
 
     /**
      * The jump to make for the current [positionMs], or null when nothing
      * should be skipped. The caller reports a failed seek with [release] so the
-     * marker can trigger again on the next poll.
+     * range can trigger again on the next poll.
      */
     fun nextAction(positionMs: Long, durationMs: Long): SkipAction? {
         if (positionMs <= 0L || durationMs <= 0L) return null
         if (settings.skipIntro) {
-            actionFor(SkipKind.INTRO, intro, positionMs, durationMs)?.let { return it }
+            actionFor(SkipKind.INTRO, positionMs, durationMs)?.let { return it }
         }
         if (settings.skipCredits) {
-            actionFor(SkipKind.CREDITS, credits, positionMs, durationMs)?.let { return it }
+            actionFor(SkipKind.CREDITS, positionMs, durationMs)?.let { return it }
         }
         return null
     }
 
-    /** Lets [kind] trigger again; used when the seek that [nextAction] asked for did not happen. */
+    /** Lets the range [kind] skipped last trigger again; used when its seek did not happen. */
     fun release(kind: SkipKind) {
-        done.remove(kind)
+        lastSkipped.remove(kind)?.let { end -> done[kind]?.remove(end) }
     }
 
-    private fun actionFor(kind: SkipKind, range: SkipRange?, positionMs: Long, durationMs: Long): SkipAction? {
-        if (kind in done) return null
-        val usable = range?.takeIf { it.isUsable } ?: return null
-        val start = max(0L, (usable.startSeconds * 1000.0).toLong())
-        val end = min(ceil(usable.endSeconds * 1000.0).toLong(), durationMs - FINAL_MARGIN_MS)
-        if (end <= start) return null
-        if (positionMs < start || positionMs >= end) return null
-        done.add(kind)
-        return SkipAction(kind, end)
+    private fun actionFor(kind: SkipKind, positionMs: Long, durationMs: Long): SkipAction? {
+        val playing = ranges.getValue(kind).lastOrNull { range ->
+            positionMs >= range.startMs() && positionMs < range.targetMs(durationMs)
+        } ?: return null
+        val end = playing.endMs()
+        val skipped = done.getOrPut(kind) { mutableSetOf() }
+        if (!skipped.add(end)) return null
+        lastSkipped[kind] = end
+        return SkipAction(kind, playing.targetMs(durationMs))
     }
+
+    private fun SkipRange.startMs(): Long = max(0L, (startSeconds * 1000.0).toLong())
+
+    private fun SkipRange.endMs(): Long = ceil(endSeconds * 1000.0).toLong()
+
+    private fun SkipRange.targetMs(durationMs: Long): Long = min(endMs(), durationMs - FINAL_MARGIN_MS)
 
     companion object {
         /** Same margin the Kodi add-on keeps before the end of the file. */
         const val FINAL_MARGIN_MS = 1_000L
+
+        private fun usableInOrder(ranges: List<SkipRange>): List<SkipRange> =
+            ranges.filter { it.isUsable }.sortedWith(compareBy({ it.startSeconds }, { it.endSeconds }))
     }
 }

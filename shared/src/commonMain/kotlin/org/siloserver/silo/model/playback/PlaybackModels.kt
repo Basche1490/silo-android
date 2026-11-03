@@ -82,6 +82,12 @@ data class PlayerSubtitleInfo(
     @SerialName("hls_rendition") val hlsRendition: SubtitleHlsRendition? = null,
     /** The inventory's `sync_key`: present when the server can sync this track to the audio. */
     @SerialName("sync_key") val syncKey: String? = null,
+    /**
+     * No route can show this server track ([isUnplayableSubtitle]). Pickers
+     * list it disabled and Auto never picks it; the row stays so the
+     * combined ordinals keep their places.
+     */
+    val unplayable: Boolean = false,
 )
 
 /**
@@ -92,6 +98,12 @@ data class PlayerSubtitleInfo(
 data class SubtitleHlsRendition(
     @SerialName("group_id") val groupId: String,
     val name: String,
+    /**
+     * 1-based place in the group, present only when the stream lists every
+     * embedded text track as a rendition: the player can then switch to this
+     * track on the stream it already plays.
+     */
+    val index: Int? = null,
 ) {
     /**
      * The `Format.id` Media3's `HlsPlaylistParser` gives the rendition:

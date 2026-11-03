@@ -52,6 +52,8 @@ import org.siloserver.silo.common.player.video.VideoPlaybackStartRequest
 import org.siloserver.silo.common.player.video.VideoPlaybackStartResult
 import org.siloserver.silo.common.player.video.VideoPlaybackStarter
 import org.siloserver.silo.domain.player.BufferingQualityMode
+import org.siloserver.silo.domain.player.MarkerKind
+import org.siloserver.silo.domain.player.MarkerTimeline
 import org.siloserver.silo.model.catalog.TimeRange
 import org.siloserver.silo.network.httpOrigin
 import org.siloserver.silo.network.localroute.LocalRouteHeaders
@@ -400,18 +402,26 @@ class ZidooHandoffCoordinator(
             }
             launched = true
 
+            // Every intro and credits occurrence, read the way Silo's own player reads them.
+            val markers = MarkerTimeline.resolve(
+                ready.markerSegments,
+                intro = ready.intro,
+                credits = ready.credits,
+                recap = ready.recap,
+                preview = ready.preview,
+            )
             val monitor = ZidooPlaybackMonitor(
                 api = zidoo,
                 startPositionMs = startPositionMs,
                 startupTimeoutMs = PLAYER_START_TIMEOUT_MS,
                 planner = ZidooSkipPlanner(
-                    intro = ready.intro?.toSkipRange(),
-                    credits = ready.credits?.toSkipRange(),
+                    intros = markers.ranges(MarkerKind.Intro).map { it.toSkipRange() },
+                    credits = markers.ranges(MarkerKind.Credits).map { it.toSkipRange() },
                     settings = settings.skipSettings(),
                 ),
             )
-            // Whether the episode plays to its end, for Up Next.
-            val endWatch = ZidooEndWatch(creditsStartSeconds = ready.credits?.start)
+            // Whether the episode plays to its end, for Up Next: past the last credits range, as in Silo.
+            val endWatch = ZidooEndWatch(creditsStartSeconds = markers.upNextCreditsStart())
             val outcome = coroutineScope {
                 // As in Silo's own player: when the server ends the session for
                 // good (an administrator stopped it), playback ends too.

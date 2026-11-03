@@ -79,12 +79,12 @@ WorkManager-backed downloads of video, audiobooks, and books to public device st
 
 ### 📚 Library, browse & discovery (phone + TV)
 - **Phone navigation** — Home, Libraries, For You, Calendar, and Downloads when the active profile has downloads. Video / Audio / Reading are library modes, not bottom-nav tabs.
-- **TV navigation** — Home, visible media-type tabs derived from server libraries (Movies/TV/Music/Audiobooks), For You, and Calendar. Reading/ebooks are intentionally excluded from TV.
+- **TV navigation** — Search, then Home, visible media-type tabs derived from server libraries (Movies/Series/Music/Audiobooks), For You, and Calendar. Requests sits in the profile menu. Reading/ebooks are intentionally excluded from TV.
 - **Home** with Continue Watching, Recently Added/Released, and server-curated recommendation rows.
 - **Browse** with genre/rating filters, sorting, and infinite-scroll grids; **collections** are browse-only in the Android clients, while collection authoring/management remains web-only.
 - **Item detail** for movies and series includes seasons → episodes, multi-version files, cast/crew, local download controls, and phone-to-TV playback handoff.
 - **Search** scoped by media type, debounced and paginated.
-- **Requests** — live on phone and TV behind the server's `requests_enabled` flag (phone: profile menu + search; TV: top-bar tab + search); request administration stays in web admin. **Experimental** — Watch Party, behind Settings → Experimental. **Not exposed** — other admin surfaces and session management are not reachable app surfaces today.
+- **Requests** — live on phone and TV behind the server's `requests_enabled` flag (phone and TV: profile menu + search); request administration stays in web admin. **Experimental** — Watch Party, behind Settings → Experimental. **Not exposed** — other admin surfaces and session management are not reachable app surfaces today.
 
 ### 📖 Reading & 🎧 Audio
 - **Ebook reader (phone only)** — EPUB, PDF, CBZ (comics), TXT/Markdown, FB2/FBZ, plus MOBI/AZW/AZW3 when the server can convert to EPUB; CBR and unsupported originals can be downloaded/opened externally. Themes, text size, margins, table of contents, bookmarks, and progress are supported.
@@ -258,7 +258,9 @@ Known gaps the docs track: TV has no reader/ebooks and no downloads management b
 
 ## License & Trademarks
 
-Silo Android is licensed under `AGPL-3.0-or-later`. See [LICENSE](LICENSE).
+Silo Android is licensed under `AGPL-3.0-or-later`, with an additional
+permission to combine it with platform SDKs. See [LICENSE](LICENSE) and
+[PLATFORM-EXCEPTION.md](PLATFORM-EXCEPTION.md).
 
 The **Silo name, logo, and wordmark are trademarks of Silo Media L.L.C.** and
 are **not** covered by the AGPL. You're free to fork and redistribute the code,

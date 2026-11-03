@@ -50,6 +50,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import org.siloserver.silo.common.ui.LanguageNames
+import org.siloserver.silo.common.player.allowsAudioDelay
 import org.siloserver.silo.common.player.video.markerSkipTarget
 import org.siloserver.silo.common.player.video.ManualMarkerKind
 import androidx.compose.ui.res.stringResource
@@ -579,7 +580,7 @@ fun PlayerOverlay(
         }
 
         if (!state.showUpNext && !introSkipState.isVisible && seekEnabled && !state.isLoading) {
-            val target = markerSkipTarget(state.position, state.recap, state.credits)
+            val target = markerSkipTarget(state.position, state.markerTimeline)
             if (target != null) {
                 Box(modifier = bottomEndSlotModifier, contentAlignment = Alignment.BottomEnd) {
                     MarkerSkipPill(
@@ -825,7 +826,9 @@ fun PlayerOverlay(
                 statsSheetVisible = true
             },
             audioDelayMs = viewModel.audioDelayMs.collectAsState().value,
-            audioDelayEnabled = state.playbackPlan?.claims?.audio?.passthrough != true,
+            audioDelayEnabled = viewModel.audioOutputPath.collectAsState().value.allowsAudioDelay(
+                planClaimsPassthrough = state.playbackPlan?.claims?.audio?.passthrough,
+            ),
             onSetAudioDelay = viewModel::onSetAudioDelay,
             subtitleDelayMs = viewModel.subtitleDelayMs.collectAsState().value,
             subtitleDelaySavedToProfile = viewModel.subtitleDelaySavedToProfile.collectAsState().value,

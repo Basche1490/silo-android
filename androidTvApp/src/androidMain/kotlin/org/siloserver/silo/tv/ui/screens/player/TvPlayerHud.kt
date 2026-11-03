@@ -108,6 +108,8 @@ import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Icon
 import androidx.tv.material3.Text
 import kotlinx.coroutines.launch
+import org.siloserver.silo.common.R as CommonR
+import org.siloserver.silo.common.player.AudioOutputPath
 import org.siloserver.silo.common.player.PlayerStatsSnapshot
 import org.siloserver.silo.common.player.SleepTimerState
 import org.siloserver.silo.domain.player.IntroSkipMode
@@ -228,6 +230,8 @@ internal fun TvPlayerHud(
     onAutoPlayNextChanged: (Boolean) -> Unit,
     audioDelayMs: Int,
     audioDelayEnabled: Boolean,
+    /** What the sink is doing with the track; null until an AudioTrack exists. */
+    audioOutputPath: AudioOutputPath?,
     onAudioDelayChanged: (Int) -> Unit,
     subtitleDelayMs: Int,
     subtitleDelayEnabled: Boolean,
@@ -614,6 +618,7 @@ internal fun TvPlayerHud(
                         onSelectAudio = onSelectAudio,
                         audioDelayMs = audioDelayMs,
                         audioDelayEnabled = audioDelayEnabled,
+                        audioOutputPath = audioOutputPath,
                         onAudioDelayChanged = onAudioDelayChanged,
                         stats = stats,
                         entryFocusRequester = paneEntryFocus,
@@ -1355,6 +1360,7 @@ private fun HudAudioPane(
     onSelectAudio: (Int) -> Unit,
     audioDelayMs: Int,
     audioDelayEnabled: Boolean,
+    audioOutputPath: AudioOutputPath?,
     onAudioDelayChanged: (Int) -> Unit,
     stats: PlayerStatsSnapshot,
     entryFocusRequester: FocusRequester,
@@ -1366,13 +1372,22 @@ private fun HudAudioPane(
     // value 500dp from its label — "Audio track ……… English · DTS · 5.1" —
     // and left the card two-thirds empty. The right column is read-only
     // output facts the viewer would otherwise have to dig out of Stats.
-    // Output — what the device is actually doing with the track. Mode is
-    // the fact behind the delay row's "Unavailable during passthrough":
-    // bitstream passthrough hands the codec to the receiver untouched, so
-    // there is no PCM to delay.
+    // Output — what the device is actually doing with the track, read from
+    // the AudioTrack Media3 configured, not from the server plan's claim:
+    // the sink picks passthrough from the live HDMI capabilities, so the two
+    // can disagree. Mode is the fact behind the delay row's "Unavailable":
+    // passthrough and offload both skip the app's PCM processing, so there
+    // is nothing to delay. Until the first track exists, fall back to the
+    // plan.
     val outputRows = buildList<Pair<String, String>> {
         audioFormatShortName(stats.audioCodec)?.let { add("Codec" to it) }
-        add("Mode" to if (audioDelayEnabled) "Decoded to PCM" else "Passthrough")
+        val mode = when (audioOutputPath) {
+            AudioOutputPath.Pcm -> "Decoded to PCM"
+            AudioOutputPath.Passthrough -> "Passthrough"
+            AudioOutputPath.Offload -> "Hardware offload"
+            null -> if (audioDelayEnabled) "Decoded to PCM" else "Passthrough"
+        }
+        add("Mode" to mode)
         stats.audioDecoderName
             ?.takeIf { audioDelayEnabled }
             ?.let { add("Decoder" to it.removePrefix("OMX.").removePrefix("c2.")) }
@@ -1587,7 +1602,8 @@ private fun HudSubtitlesPane(
         left = {
             // The entry row is the checked track, so Down from the rail lands
             // on the current choice; the first row when nothing is checked.
-            val entryRow = presentation.rows.firstOrNull { row -> row.checked } ?: presentation.rows.firstOrNull()
+            val entryRow = presentation.rows.firstOrNull { row -> row.checked && !row.unplayable }
+                ?: presentation.rows.firstOrNull()
             presentation.rows.forEach { row ->
                 key(row.stableId) {
                     HudSubtitleTrackRow(
@@ -1978,12 +1994,16 @@ private fun HudSubtitleTrackRow(
     val isFocused by interactionSource.collectIsFocusedAsState()
     val colors = hudRowColors(focused = isFocused, current = row.checked)
     val parts = remember(row.label) { tvSubtitleRowParts(row.label) }
+    val unsupportedFormat = stringResource(CommonR.string.subtitle_track_unsupported_format)
     // The AI kind leads so it survives the detail's ellipsis.
     val detail = listOfNotNull(
         parts.aiKind,
-        row.status ?: syncStatus,
+        row.status ?: unsupportedFormat.takeIf { row.unplayable } ?: syncStatus,
         parts.detail,
     ).joinToString(" · ").ifBlank { null }
+    // A track no route can show is listed but, like a disabled setting row,
+    // dimmed and out of the D-pad's path.
+    val rowAlpha = if (row.unplayable) 0.35f else 1f
 
     // The checked row is revealed when the pane opens; focus reveals the rest.
     LaunchedEffect(Unit) { if (row.checked) bringIntoViewRequester.bringIntoView() }
@@ -1999,8 +2019,13 @@ private fun HudSubtitleTrackRow(
                     scope.launch { bringIntoViewRequester.bringIntoView() }
                 }
             }
+            .graphicsLayer { alpha = rowAlpha }
             .hudRow(colors.background)
-            .clickable(enabled = enabled, interactionSource = interactionSource, indication = null) { onSelect() }
+            .clickable(
+                enabled = enabled && !row.unplayable,
+                interactionSource = interactionSource,
+                indication = null,
+            ) { onSelect() }
             .semantics { selected = row.checked }
             .padding(horizontal = HudRowPadding, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -2636,6 +2661,8 @@ internal data class HudPickerOption(
     val detail: String? = null,
     /** A short value at the row's end, such as "1×" beside "Normal" or a bitrate. */
     val trailing: String? = null,
+    /** False lists the option dimmed, out of focus and Select. */
+    val enabled: Boolean = true,
 )
 
 /**
@@ -2915,10 +2942,12 @@ private fun HudPickerOptionRow(
     val scope = rememberCoroutineScope()
     val isFocused by interactionSource.collectIsFocusedAsState()
     val colors = hudRowColors(focused = isFocused, current = isSelected)
+    val rowAlpha = if (option.enabled) 1f else 0.35f
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .graphicsLayer { alpha = rowAlpha }
             .hudRow(colors.background)
             .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
             .bringIntoViewRequester(bringIntoViewRequester)
@@ -2928,7 +2957,7 @@ private fun HudPickerOptionRow(
                     scope.launch { bringIntoViewRequester.bringIntoView() }
                 }
             }
-            .clickable(interactionSource = interactionSource, indication = null) { onSelect() }
+            .clickable(enabled = option.enabled, interactionSource = interactionSource, indication = null) { onSelect() }
             .semantics { this.selected = isSelected }
             .padding(horizontal = HudRowPadding, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,

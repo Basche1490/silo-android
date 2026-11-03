@@ -39,8 +39,8 @@ class ZidooPlaybackMonitorTest {
     ) = ZidooPlaybackMonitor(
         api = api,
         planner = ZidooSkipPlanner(
-            intro = SkipRange(30.0, 90.0),
-            credits = SkipRange(3_300.0, 3_600.0),
+            intros = listOf(SkipRange(30.0, 90.0)),
+            credits = listOf(SkipRange(3_300.0, 3_600.0)),
             settings = settings,
         ),
         startPositionMs = startPositionMs,

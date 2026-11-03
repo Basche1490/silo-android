@@ -17,13 +17,16 @@ Silo still tracks the playback:
   server's watched threshold (90% unless changed), the title counts as
   watched, as it does in Silo's own player.
 - **Skip intro and credits.** Silo reads the Zidoo player's position every
-  second and jumps over the intro and credits using the server's markers. Each
-  marker is skipped once per playback, so seeking back into one plays it.
+  second and jumps over the intro and credits using the server's markers, as
+  Silo's own player does. A file can have more than one of each, such as two
+  credits ranges around a scene in the middle of the credits. Each jump ends
+  where its own range ends, so a scene between two ranges still plays. Each
+  range is skipped once per playback, so seeking back into one plays it.
 - **Audio and subtitles.** Your audio choice carries over. A subtitle carries
   over when it is embedded in the file; anything else is left to the Zidoo
   player's own language settings.
-- **Up Next.** When an episode plays to the end (on into its end credits, or
-  to its last half minute), Silo shows the next one, from this season or the
+- **Up Next.** When an episode plays to the end (on into its last end-credits
+  range, or to its last half minute), Silo shows the next one, from this season or the
   next. Stopping partway never offers it, and neither does seeking into the
   credits or a credits marker in the first half of the episode, which some
   files use for the opening credits.
@@ -66,8 +69,8 @@ remember the profile or change Profile Selection in Settings.
 
 1. In **Silo → Settings → External Player**, turn on **Play in Zidoo Player**,
    and choose whether to skip intros and credits automatically. Intro skipping
-   starts on; credits skipping starts off, because on a film it jumps past any
-   scene after the credits. **Up Next Countdown** sets how long Up Next waits
+   starts on; credits skipping starts off, because on a film a credits marker
+   that runs to the end of the file jumps past any scene after the credits. **Up Next Countdown** sets how long Up Next waits
    before the next episode.
 2. Keep **Settings → Theme Music** off (see Known limits). While it is on,
    External Player shows a **Turn Off** button for it.
@@ -198,7 +201,7 @@ New files (no clash possible):
 | --- | --- |
 | PlexToZidoo launch URI (`PlexToZidoo-*` parameters) | `android-shared/.../player/external/PlexToZidooLaunch.kt` |
 | Zidoo player HTTP API on `127.0.0.1:9529` | `android-shared/.../player/external/ZidooPlayerApi.kt` |
-| Polling, skips, end-of-playback detection | `android-shared/.../player/external/ZidooPlaybackMonitor.kt`, `ZidooSkipPlanner.kt` |
+| Polling, skips, end-of-playback detection | `android-shared/.../player/external/ZidooPlaybackMonitor.kt`, `ZidooSkipPlanner.kt`, `ZidooEndWatch.kt` |
 | Audio and subtitle index translation | `android-shared/.../player/external/ZidooTrackMapping.kt` |
 | Settings store | `android-shared/.../player/external/ExternalPlayerSettings.kt` |
 | Stream relay for the Zidoo player | `android-shared/.../player/external/ZidooStreamRelay.kt` |

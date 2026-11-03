@@ -14,7 +14,7 @@ class ZidooSkipPlannerTest {
         settings: ZidooSkipSettings = both,
         intro: SkipRange? = this.intro,
         credits: SkipRange? = this.credits,
-    ) = ZidooSkipPlanner(intro, credits, settings)
+    ) = ZidooSkipPlanner(listOfNotNull(intro), listOfNotNull(credits), settings)
 
     @Test
     fun skipsToTheEndOfTheIntroOnceInsideIt() {
@@ -95,5 +95,77 @@ class ZidooSkipPlannerTest {
         val planner = planner(credits = SkipRange(3_599.5, 3_600.0))
 
         assertNull(planner.nextAction(positionMs = 3_599_600, durationMs = 3_600_000))
+    }
+
+    @Test
+    fun skipsEachCreditsRangeToItsOwnEnd() {
+        // A mid-credits scene plays between two credits ranges.
+        val planner = ZidooSkipPlanner(
+            intros = emptyList(),
+            credits = listOf(SkipRange(3_300.0, 3_400.0), SkipRange(2_700.0, 2_900.0)),
+            settings = both,
+        )
+
+        assertEquals(SkipAction(SkipKind.CREDITS, 2_900_000), planner.nextAction(2_750_000, 3_600_000))
+        // The scene between the ranges plays.
+        assertNull(planner.nextAction(2_900_000, 3_600_000))
+        assertNull(planner.nextAction(3_000_000, 3_600_000))
+        assertEquals(SkipAction(SkipKind.CREDITS, 3_400_000), planner.nextAction(3_300_000, 3_600_000))
+        // Back into the first range: already skipped.
+        assertNull(planner.nextAction(2_750_000, 3_600_000))
+    }
+
+    @Test
+    fun skipsEveryIntroOnce() {
+        val planner = ZidooSkipPlanner(
+            intros = listOf(SkipRange(30.0, 90.0), SkipRange(900.0, 960.0)),
+            credits = emptyList(),
+            settings = both,
+        )
+
+        assertEquals(90_000, planner.nextAction(31_000, 3_600_000)?.targetMs)
+        assertEquals(960_000, planner.nextAction(905_000, 3_600_000)?.targetMs)
+        assertNull(planner.nextAction(910_000, 3_600_000))
+    }
+
+    @Test
+    fun overlappingRangesFollowTheOneThatStartedLast() {
+        val planner = ZidooSkipPlanner(
+            intros = listOf(SkipRange(30.0, 120.0), SkipRange(60.0, 90.0)),
+            credits = emptyList(),
+            settings = both,
+        )
+
+        assertEquals(90_000, planner.nextAction(70_000, 3_600_000)?.targetMs)
+        assertEquals(120_000, planner.nextAction(95_000, 3_600_000)?.targetMs)
+    }
+
+    @Test
+    fun rangesThatEndTogetherCountAsOne() {
+        val planner = ZidooSkipPlanner(
+            intros = listOf(SkipRange(30.0, 90.0), SkipRange(45.0, 90.0)),
+            credits = emptyList(),
+            settings = both,
+        )
+
+        assertEquals(90_000, planner.nextAction(50_000, 3_600_000)?.targetMs)
+        // Scrubbing back into the earlier one does not skip the same intro again.
+        assertNull(planner.nextAction(35_000, 3_600_000))
+    }
+
+    @Test
+    fun releaseOnlyFreesTheRangeWhoseSeekFailed() {
+        val planner = ZidooSkipPlanner(
+            intros = listOf(SkipRange(30.0, 90.0), SkipRange(900.0, 960.0)),
+            credits = emptyList(),
+            settings = both,
+        )
+        planner.nextAction(31_000, 3_600_000)
+        val second = planner.nextAction(905_000, 3_600_000)!!
+
+        planner.release(second.kind)
+
+        assertEquals(second, planner.nextAction(906_000, 3_600_000))
+        assertNull(planner.nextAction(32_000, 3_600_000))
     }
 }

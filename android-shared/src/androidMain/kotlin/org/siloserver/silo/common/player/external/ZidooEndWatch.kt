@@ -3,8 +3,9 @@ package org.siloserver.silo.common.player.external
 /**
  * Decides whether an episode the Zidoo player has closed played to its end,
  * where Up Next is offered. Silo's own player offers Up Next when playback
- * crosses the start of the credits, or when the video ends. This applies the
- * same rule to the positions the Zidoo player reports:
+ * crosses the start of the last credits range (`MarkerTimeline.upNextCreditsStart`,
+ * so a scene between two credits ranges still plays), or when the video ends.
+ * This applies the same rule to the positions the Zidoo player reports:
  *
  * - Playback crossed into the credits while playing, and is still in them.
  *   Seeking into the credits, or resuming inside them, does not count.

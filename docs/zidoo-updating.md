@@ -34,6 +34,7 @@ You only need to step in when a run fails.
 | --- | --- |
 | Wait for the monthly build | Nothing. Install from the Downloader address when you like. |
 | Build with the newest Silo code now | **Actions → Zidoo TV APK → Run workflow**. Takes about 15 minutes. |
+| Build only the fork's own code | **Run workflow** with **Merge the newest Silo code into the build** unticked. Use it to try a fork fix without also bringing in Silo changes nobody has checked yet. |
 | Bring the fork's own code up to date | **Sync fork → Update branch** on the fork's main page. This also starts a build. |
 | Delete old releases | On the fork's **Releases** page, open an old release and press **Delete**. Never delete the one marked **Latest**: the Downloader address serves it. |
 
@@ -88,14 +89,14 @@ Please update my Silo Android TV fork, github.com/Basche1490/silo-android, with 
 
 Rules: only push to my fork's main branch, even if this session was set up with a different working branch. Never push to Silo-Server/silo-android and never open a pull request there. Don't change .github/zidoo-debug.keystore or the application ID.
 
-My fork adds Zidoo external-player support: playing in the Zidoo player through PlexToZidoo, with Silo tracking resume progress, auto-skipping intro and credits, Up Next with a countdown, streaming through Silo's relay (with a Direct Stream Link option), and Fit Interface to TV for the Zidoo's screen density. I want the app to stay as close to stock Silo as possible, with the Zidoo support on top. First read docs/zidoo-updating.md and docs/zidoo-external-player.md in my fork; they list every file the fork adds, every [zidoo-fork] edit to Silo's own files, the Silo code the fork depends on, and the behaviour the fork must keep.
+My fork adds Zidoo external-player support: playing in the Zidoo player through PlexToZidoo, with Silo tracking resume progress, auto-skipping every intro and credits range, Up Next with a countdown, streaming through Silo's relay (with a Direct Stream Link option), and Fit Interface to TV for the Zidoo's screen density. I want the app to stay as close to stock Silo as possible, with the Zidoo support on top. First read docs/zidoo-updating.md and docs/zidoo-external-player.md in my fork; they list every file the fork adds, every [zidoo-fork] edit to Silo's own files, the Silo code the fork depends on, and the behaviour the fork must keep.
 
 Please:
 1. Merge Silo-Server/silo-android main into my fork's main. Resolve any conflicts keeping both Silo's change and every [zidoo-fork] edit. Afterwards every [zidoo-fork] edit the guide lists must still be there. Don't add new edits to Silo's files unless a feature needs one.
-2. Check what Silo changed in the code the fork depends on. Adapt the fork's files so they still build and behave as before, including changes that build cleanly but alter playback, such as quality, bandwidth limits, network routing, sessions, Up Next or settings. Keep every point under "Behaviour the fork must keep"; where Silo changed how its own player does the same thing, follow Silo. Update the two docs if you add or change a [zidoo-fork] edit, a dependency or a behaviour.
+2. Check what Silo changed in the code the fork depends on. Adapt the fork's files so they still build and behave as before, including changes that build cleanly but alter playback, such as quality, bandwidth limits, network routing, sessions, intro and credits markers, Up Next or settings. Keep every point under "Behaviour the fork must keep"; it also records fixes that were tried and failed, such as for theme music, so don't repeat them. Where Silo changed how its own player does the same thing, follow Silo. Update the two docs if you add or change a [zidoo-fork] edit, a dependency or a behaviour.
 3. Run the External Player unit tests. If your environment can't build Android, run the ones the guide's "Testing without the Android SDK" section describes, and say which ran. Push to main and wait for the "Zidoo TV APK" GitHub Action to pass. If no run starts within a few minutes, check whether GitHub Actions is turned off for my fork, tell me how to turn it on, and then start the workflow manually.
 4. From the run's log, confirm the APK is a non-debuggable release build signed with my fork's key, and that its versionCode is no lower than the previous release's, so it installs over my current app. Confirm the new release is marked Latest.
-5. Tell me in plain language what changed in Silo, what you changed in the fork, and what I should test on the Zidoo.
+5. Tell me in plain language what changed in Silo, what you changed in the fork, and what I should test on the Zidoo. If I then report a title that doesn't play, ask me for a photo of Settings → External Player → Hand-off Log before changing anything.
 ```
 
 ### Option B: fix it with a Claude chat that can't reach GitHub
@@ -257,8 +258,14 @@ are the dependencies to check:
   `tvVideoPlaybackStarter`), `VideoPlaybackStartRequest` (including
   `recoveryStartParams` and `resumePositionOverride`) and
   `VideoPlaybackStartResult.Ready` (session id, file and versions, stream URL
-  and headers, delivery and play method, `sourceStartPositionSeconds`, intro
-  and credits markers, series, season and episode numbers, access token).
+  and headers, delivery and play method, `sourceStartPositionSeconds`, the
+  `intro`, `credits`, `recap`, `preview` and `markerSegments` markers, series,
+  season and episode numbers, access token).
+- **Markers:** `MarkerTimeline.resolve`, `ranges(MarkerKind.Intro)`,
+  `ranges(MarkerKind.Credits)` and `upNextCreditsStart()`. Silo's own player
+  reads markers through them, so the hand-off skips and offers Up Next from the
+  same ranges. A server can list each kind more than once in
+  `marker_segments`; the singular fields hold only the first.
 - **Sessions and progress:** `PlaybackSessionLifecycle` (`reportPosition`,
   `stop`, `settlePendingPublicationIfCurrent`, `retireUnpublishedSession`,
   `sessionEndedEvents`) and `PlaybackSessionManager` (`getAccessToken`,
@@ -280,7 +287,8 @@ are the dependencies to check:
   `nextEpisodeAfter`, `PlayerSettingsStore.autoPlayNextFlow` and
   `passOutThresholdFlow`, and `TvRoute.Player`'s arguments. `ZidooEndWatch`
   follows the rule in `TvPlayerViewModel` that offers Up Next when playback
-  crosses the credits start; if Silo changes that rule, follow it.
+  crosses `MarkerTimeline.upNextCreditsStart()`, the start of the last credits
+  range; if Silo changes that rule, follow it.
 - **Profiles:** `ProfileAwayTracker`'s `isCasting` parameter and
   `onRemotePlaybackChanged`.
 - **Screens and settings:** `TvDialogCard`, `TvPlayerChrome`, `TvPlayerType`,
@@ -315,11 +323,16 @@ not undo them; the unit tests named in brackets guard the ones they can.
   player the stream address with `token=`, as Plex links carry their token.
   The relay is the default because it keeps the token out of the address and
   renews it during long films.
+- **Each intro and credits range is skipped to its own end.** With several
+  ranges of one kind, a jump never spans the content between two of them, so a
+  mid-credits scene plays; each range skips once, and a jump stops a second
+  short of the end of the file (`ZidooSkipPlannerTest`). This follows Silo's
+  own player since Silo added `marker_segments`.
 - **Up Next only at the real end.** It appears only when playback crossed into
-  the end credits while playing, or stopped in the last half minute. Stopping
-  partway, seeking into the credits, resuming inside them, and a credits marker
-  in the first half of the episode (opening credits) never trigger it
-  (`ZidooEndWatchTest`).
+  the last end-credits range while playing, or stopped in the last half
+  minute. Stopping partway, seeking into the credits, resuming inside them,
+  and a credits marker in the first half of the episode (opening credits)
+  never trigger it (`ZidooEndWatchTest`).
 - **Silo waits long enough for the Zidoo player.** It waits up to five
   minutes (`PLAYER_START_TIMEOUT_MS`) for the player to report the video,
   counting from when PlexToZidoo opens. PlexToZidoo's Debug data screen waits
@@ -351,22 +364,27 @@ not undo them; the unit tests named in brackets guard the ones they can.
 
 Claude's cloud sessions may not be able to download the Android SDK. Most of
 the External Player tests are plain Kotlin and can still run there, in a small
-Gradle project outside the repository (Kotlin 2.1.20 and the Gradle in
-`/opt/gradle-*` work):
+Gradle project outside the repository (Kotlin 2.1.20 and the `gradle` already
+installed under `/opt/gradle` work):
 
 1. Copy `ZidooStreamRelay.kt`, `ZidooEndWatch.kt`, `ZidooPlaybackMonitor.kt`,
-   `ZidooSkipPlanner.kt` and `ZidooPlayerApi.kt` from
+   `ZidooSkipPlanner.kt`, `ZidooPlayerApi.kt` and `ZidooHandoffLog.kt` from
    `android-shared/src/androidMain/.../player/external/` into its
    `src/main/kotlin`, with a stub `android.util.Log` object that has a
    `w(tag, msg, tr)` function.
 2. Copy `ZidooStreamRelayTest.kt`, `ZidooEndWatchTest.kt`,
-   `ZidooPlaybackMonitorTest.kt` and `ZidooSkipPlannerTest.kt` into its
-   `src/test/kotlin`.
+   `ZidooPlaybackMonitorTest.kt`, `ZidooSkipPlannerTest.kt` and
+   `ZidooHandoffLogTest.kt` into its `src/test/kotlin`.
 3. Depend on `com.squareup.okhttp3:okhttp:4.12.0`,
    `org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2`,
    `org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1` and
    `kotlin("test-junit")` (use the versions in `gradle/libs.versions.toml`),
    and run `gradle test`.
+
+To check how the coordinator feeds Silo's markers to the skips and Up Next,
+also copy Silo's `shared/.../domain/player/MarkerTimeline.kt`, with stub
+`TimeRange(start, end)` and `MarkerSegment(kind, startSeconds, endSeconds)`
+data classes in `org.siloserver.silo.model.catalog`.
 
 The tests that need Silo's own models (capabilities, PlexToZidoo launch,
 settings) run only in the GitHub Action.
@@ -391,7 +409,11 @@ Install the new APK from the Downloader address, then check:
    the relay saw; Direct Stream Link on plays around it.
 9. Stopping an episode partway returns to the show with no Up Next countdown.
 10. With Skip Credits Automatically on, the credits are skipped at the end of
-    an episode, not right after its intro.
+    an episode, not right after its intro. Where the server marks two credits
+    ranges, the scene between them plays.
 11. Seeking more than an hour into a long film still works.
 12. Settings → Theme Music is off, and Settings → External Player shows its
     Theme Music warning when you turn it on.
+13. Settings → External Player → Hand-off Log opens and lists the latest
+    hand-off. When a title doesn't play, a photo of it is the quickest way to
+    show Claude what happened.
