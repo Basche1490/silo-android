@@ -97,8 +97,22 @@ fun TvExternalPlayerScreen(
     // return before the Zidoo player reported a video means it closed without
     // playing, so the run reports that within seconds instead of waiting.
     val lifecycleOwner = LocalLifecycleOwner.current
+    // Whether this screen is in front, and whether it has been long enough to
+    // show the Playing card; see PLAYING_CARD_DELAY_MS. Both are set from the
+    // lifecycle callbacks themselves, so the first frame after Silo comes back
+    // already has them right.
+    var inFront by remember { mutableStateOf(false) }
+    var playingCardReady by remember { mutableStateOf(false) }
     DisposableEffect(lifecycleOwner, runId) {
         val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_PAUSE -> {
+                    inFront = false
+                    playingCardReady = false
+                }
+                Lifecycle.Event.ON_RESUME -> inFront = true
+                else -> Unit
+            }
             if (runId == 0L) return@LifecycleEventObserver
             when (event) {
                 Lifecycle.Event.ON_PAUSE -> coordinator.onScreenHidden(runId)
@@ -108,6 +122,18 @@ fun TvExternalPlayerScreen(
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    // Closing the Zidoo player brings Silo back a moment before the run's next
+    // status check sees that playback ended, so for that moment the run still
+    // says Playing. Show the Playing card only once Silo has stayed in front
+    // with the Zidoo player still playing, not as a flash on every stop.
+    val playing = state.runId == runId && state is ZidooHandoffState.Playing
+    LaunchedEffect(playing, inFront) {
+        playingCardReady = false
+        if (!playing || !inFront) return@LaunchedEffect
+        delay(PLAYING_CARD_DELAY_MS)
+        if (inFront) playingCardReady = true
     }
 
     BackHandler {
@@ -172,18 +198,22 @@ fun TvExternalPlayerScreen(
                 )
             } ?: Progress(title = null, status = "Getting ready…")
 
-            is ZidooHandoffState.Playing -> TvDialogCard(
-                title = current.title,
-                message = "Playing in the Zidoo player. Silo saves your place and skips markers until it closes.",
-                actions = listOf(
-                    TvDialogAction(label = "Back", onClick = onExit),
-                    TvDialogAction(
-                        label = "Stop playback",
-                        onClick = coordinator::stopZidooPlayer,
-                        style = TvDialogActionStyle.Destructive,
+            is ZidooHandoffState.Playing -> if (playingCardReady) {
+                TvDialogCard(
+                    title = current.title,
+                    message = "Playing in the Zidoo player. Silo saves your place and skips markers until it closes.",
+                    actions = listOf(
+                        TvDialogAction(label = "Back", onClick = onExit),
+                        TvDialogAction(
+                            label = "Stop playback",
+                            onClick = coordinator::stopZidooPlayer,
+                            style = TvDialogActionStyle.Destructive,
+                        ),
                     ),
-                ),
-            )
+                )
+            } else {
+                Progress(current.title, "Checking the Zidoo player…")
+            }
 
             is ZidooHandoffState.Launched -> Progress(current.title, "Opening the Zidoo player…")
             is ZidooHandoffState.Saving -> Progress(current.title, "Saving your progress…")
@@ -193,6 +223,14 @@ fun TvExternalPlayerScreen(
         }
     }
 }
+
+/**
+ * How long Silo stays in front, with the Zidoo player still reported as
+ * playing, before the Playing card (Back, Stop playback) appears. Longer than
+ * the run takes to notice a closed player: one status check a second, and up
+ * to three missed ones (ZidooPlaybackMonitor).
+ */
+private const val PLAYING_CARD_DELAY_MS = 5_000L
 
 /**
  * Up Next after an episode the Zidoo player finished, as Silo's own player

@@ -36,6 +36,7 @@ You only need to step in when a run fails.
 | Build with the newest Silo code now | **Actions → Zidoo TV APK → Run workflow**. Takes about 15 minutes. |
 | Build only the fork's own code | **Run workflow** with **Merge the newest Silo code into the build** unticked. Use it to try a fork fix without also bringing in Silo changes nobody has checked yet. |
 | Bring the fork's own code up to date | **Sync fork → Update branch** on the fork's main page. This also starts a build. |
+| Get a fix or a new feature | Ask Claude with the prompt under [Asking Claude for a fix or a new feature](#asking-claude-for-a-fix-or-a-new-feature). |
 | Delete old releases | On the fork's **Releases** page, open an old release and press **Delete**. Never delete the one marked **Latest**: the Downloader address serves it. |
 
 The workflow merges Silo into a temporary copy, so the APK has the newest
@@ -89,7 +90,7 @@ Please update my Silo Android TV fork, github.com/Basche1490/silo-android, with 
 
 Rules: only push to my fork's main branch, even if this session was set up with a different working branch. Never push to Silo-Server/silo-android and never open a pull request there. Don't change .github/zidoo-debug.keystore or the application ID.
 
-My fork adds Zidoo external-player support: playing in the Zidoo player through PlexToZidoo, with Silo tracking resume progress, auto-skipping every intro and credits range, Up Next with a countdown, streaming through Silo's relay (with a Direct Stream Link option), and Fit Interface to TV for the Zidoo's screen density. I want the app to stay as close to stock Silo as possible, with the Zidoo support on top. First read docs/zidoo-updating.md and docs/zidoo-external-player.md in my fork; they list every file the fork adds, every [zidoo-fork] edit to Silo's own files, the Silo code the fork depends on, and the behaviour the fork must keep.
+My fork adds Zidoo external-player support: playing in the Zidoo player through PlexToZidoo, with Silo tracking resume progress, auto-skipping every intro and credits range, Up Next with a countdown (including "Up Next at Random" for shuffles), streaming through Silo's relay (with a Direct Stream Link option), and Fit Interface to TV for the Zidoo's screen density. I want the app to stay as close to stock Silo as possible, with the Zidoo support on top. First read docs/zidoo-updating.md and docs/zidoo-external-player.md in my fork; they list every file the fork adds, every [zidoo-fork] edit to Silo's own files, the Silo code the fork depends on, and the behaviour the fork must keep.
 
 Please:
 1. Merge Silo-Server/silo-android main into my fork's main. Resolve any conflicts keeping both Silo's change and every [zidoo-fork] edit. Afterwards every [zidoo-fork] edit the guide lists must still be there. Don't add new edits to Silo's files unless a feature needs one.
@@ -138,6 +139,24 @@ On a computer with git:
     git grep -n "\[zidoo-fork\]"    # should still list all the edits below
     git commit
     git push origin main
+
+## Asking Claude for a fix or a new feature
+
+For anything other than bringing in Silo's updates, such as something that
+misbehaves on the Zidoo or a feature you'd like, start a new Claude Code
+session on **Basche1490/silo-android** as for Option A and paste this, with
+your description in the brackets. It builds only the fork's own code, so a
+fix never brings in Silo changes nobody has checked yet.
+
+```
+Please make a change to my Silo Android TV fork, github.com/Basche1490/silo-android: [describe what you see on the Zidoo, or the feature you want].
+
+Rules: only push to my fork's main branch, even if this session was set up with a different working branch. Never push to Silo-Server/silo-android and never open a pull request there. Don't change .github/zidoo-debug.keystore or the application ID. Keep the app as close to stock Silo as possible: put the change in the fork's own files where you can, and don't add new edits to Silo's files unless the change needs one. Where Silo's own player already does the same thing, follow it.
+
+First read docs/zidoo-updating.md and docs/zidoo-external-player.md in my fork. Check "Behaviour the fork must keep" before changing anything: it records what each fix was for and what was tried and failed. For a playback problem, ask me for a photo of Settings → External Player → Hand-off Log first.
+
+When the change is ready: run the External Player unit tests (the guide's "Testing without the Android SDK" section says how if your environment can't build Android), push to main with [skip ci] in the commit message, then start the "Zidoo TV APK" workflow by hand with "Merge the newest Silo code into the build" unticked. Confirm from the run's log that the APK is a non-debuggable release build signed with my fork's key, that its versionCode is no lower than the previous release's, and that the new release is marked Latest. Update the two docs if the change adds or alters behaviour. Then tell me in plain language what you changed and what to test on the Zidoo.
+```
 
 ## What the fork adds
 
@@ -344,6 +363,13 @@ not undo them; the unit tests named in brackets guard the ones they can.
   the pick ends, as Silo's own player does. Before, a shuffle fell back to
   Silo's own player, which also meant Silo played sound and the Zidoo
   firmware then closed Silo on the next hand-off (see theme music below).
+- **No Playing card flash when the Zidoo player closes.** Silo comes back to
+  the front a moment before the run's next status check sees that playback
+  ended, so for that moment the run still says Playing. The screen behind the
+  Zidoo player shows its "Checking the Zidoo player…" spinner then, and shows
+  the Playing card (Back, Stop playback) only once Silo has stayed in front
+  for five seconds with the Zidoo player still playing
+  (`PLAYING_CARD_DELAY_MS` in `TvExternalPlayerScreen.kt`).
 - **Silo waits long enough for the Zidoo player.** It waits up to five
   minutes (`PLAYER_START_TIMEOUT_MS`) for the player to report the video,
   counting from when PlexToZidoo opens. PlexToZidoo's Debug data screen waits
@@ -419,14 +445,16 @@ Install the new APK from the Downloader address, then check:
    home and away from home. If it doesn't, the "Couldn't play" card says what
    the relay saw; Direct Stream Link on plays around it.
 9. Stopping an episode partway returns to the show with no Up Next countdown.
-   A shuffle (Shuffle on a show, season or library) plays in the Zidoo player,
-   and at the end of each pick "Up Next at Random" offers the next one.
-10. With Skip Credits Automatically on, the credits are skipped at the end of
+10. Shuffle on a show, a season or a library plays in the Zidoo player, and at
+    the end of each pick "Up Next at Random" counts down to the next one.
+11. Stopping a film goes back to Silo without the "Playing in the Zidoo
+    player" card (Back, Stop playback) flashing up.
+12. With Skip Credits Automatically on, the credits are skipped at the end of
     an episode, not right after its intro. Where the server marks two credits
     ranges, the scene between them plays.
-11. Seeking more than an hour into a long film still works.
-12. Settings → Theme Music is off, and Settings → External Player shows its
+13. Seeking more than an hour into a long film still works.
+14. Settings → Theme Music is off, and Settings → External Player shows its
     Theme Music warning when you turn it on.
-13. Settings → External Player → Hand-off Log opens and lists the latest
+15. Settings → External Player → Hand-off Log opens and lists the latest
     hand-off. When a title doesn't play, a photo of it is the quickest way to
     show Claude what happened.
