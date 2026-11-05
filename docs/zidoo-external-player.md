@@ -37,14 +37,19 @@ Silo still tracks the playback:
   **Play Now** starts it straight away and **Back** returns to the show. The Still Watching Prompt applies as in
   Silo's own player: after that many episodes in a row, Silo waits for Play
   Now.
+- **Shuffle.** Shuffle on a show, a season or a library plays each pick in
+  the Zidoo player. When a pick plays to its end, Silo shows **Up Next at
+  Random** with the server's next random pick, a film or an episode, and the
+  same countdown. **Pick Another** asks for a different pick, **Stop
+  Shuffling** ends the shuffle, and **Back** returns to where you started.
+  Stopping a pick partway ends there, as it does for Up Next.
 - **The file as it is.** Silo asks the server to plan for the Zidoo player,
   not for Silo's own player, so the server sends the original file: DTS,
   TrueHD, Blu-ray `.m2ts`, VC-1 and Dolby Vision Profile 7 included. The
   Zidoo player then does what it always does, for example decoding DTS to PCM
   for a TV without DTS, as its own audio settings say.
 
-Watch Party, Shuffle and casting from a phone keep using Silo's built-in
-player. If a server administrator ends the session, Silo stops the Zidoo
+Watch Party and casting from a phone keep using Silo's built-in player. If a server administrator ends the session, Silo stops the Zidoo
 player, as it leaves its own player.
 
 Zidoo players report a lower screen density than other Android TV boxes,
@@ -223,7 +228,7 @@ Edits to Silo's own files, each marked `[zidoo-fork]` (`git grep "\[zidoo-fork\]
 | `androidTvApp/.../tv/MainTvActivity.kt` | `attachBaseContext` applies `TvInterfaceScale.overrideConfiguration(...)` |
 | `androidTvApp/src/androidMain/AndroidManifest.xml` | `<queries>` for PlexToZidoo; the foreground service |
 | `androidTvApp/.../tv/di/AndroidTvModule.kt` | `includes(externalPlayerTvModule)`; `isCasting = ZidooHandoffCoordinator::isHandingOffNow` on the profile tracker, so Zidoo playback counts as using the profile; `bufferingQualityMode = { ZidooHandoffCoordinator.bufferingQualityModeNow() }` on the session manager, so a hand-off ignores learned bandwidth limits |
-| `androidTvApp/.../tv/ui/navigation/TvAppNavigation.kt` | `handOffToZidooIfEnabled(...)` in the `TvRoute.Player` destination, just before Silo's player is composed; its `onPlayNextEpisode` opens the next episode's `TvRoute.Player` in place of this one |
+| `androidTvApp/.../tv/ui/navigation/TvAppNavigation.kt` | `handOffToZidooIfEnabled(...)` in the `TvRoute.Player` destination, just before Silo's player is composed; its `onPlayNext` opens the next episode's or shuffle pick's `TvRoute.Player` (with the shuffle id) in place of this one |
 | `androidTvApp/.../tv/ui/screens/settings/TvSettingsScreen.kt` | `item { TvExternalPlayerSettingsGroup() }` |
 
 ## How it works

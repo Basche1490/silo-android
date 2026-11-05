@@ -88,8 +88,8 @@ internal fun TvExternalPlayerSettingsGroup(
                 "Movies and episodes open in the Zidoo player through PlexToZidoo, streamed from your Silo " +
                     "server, or from your network share where a PlexToZidoo path substitution matches. Silo " +
                     "keeps your place and skips the markers you choose. After an episode, Up Next opens the " +
-                    "next one once its countdown ends, when Auto-Play Next Episode is on. Watch Party, " +
-                    "Shuffle and casting from a phone still use Silo's player."
+                    "next one once its countdown ends, when Auto-Play Next Episode is on, and a shuffle moves " +
+                    "on to its next pick. Watch Party and casting from a phone still use Silo's player."
             } else {
                 "PlexToZidoo isn't installed. Get it from github.com/bowlingbeeg/PlexToZidoo/releases " +
                     "before turning this on."

@@ -11,6 +11,7 @@ import org.siloserver.silo.common.player.external.HttpZidooPlayerApi
 import org.siloserver.silo.common.player.external.ZidooHandoffLog
 import org.siloserver.silo.common.player.external.ZidooPlayerApi
 import org.siloserver.silo.common.profiles.ProfileAwayTracker
+import org.siloserver.silo.model.feature.ShuffleFeatureStore
 
 /**
  * Dependency wiring for Settings → External Player (Zidoo via PlexToZidoo).
@@ -68,6 +69,8 @@ val externalPlayerTvModule = module {
             // The relay connects as Silo's own video player does.
             relayClient = get(PLAYER_TRANSPORT_OKHTTP_QUALIFIER),
             handoffLog = get(),
+            // Shuffle picks: Up Next offers the shuffle's next random pick.
+            shufflePlayback = get<ShuffleFeatureStore>()::playback,
         )
     }
 }

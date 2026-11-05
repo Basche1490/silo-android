@@ -35,26 +35,29 @@ data class ZidooHandoffArgs(
  * Returns true when it did, in which case the caller must not compose the
  * built-in player.
  *
- * Watch Party, phone casts and Shuffle stay on Silo's player: the first two
- * drive the player directly, and Shuffle relies on the built-in player moving
- * on to the next item. The choice is saved per back-stack entry, so "Play in
- * Silo" after a failed hand-off sticks.
+ * Watch Party and phone casts stay on Silo's player, because they drive the
+ * player directly. A shuffle pick plays in the Zidoo player, and Up Next then
+ * offers the shuffle's next random pick. The choice is saved per back-stack
+ * entry, so "Play in Silo" after a failed hand-off sticks.
  */
 @Composable
 fun handOffToZidooIfEnabled(
     entryId: String,
     args: ZidooHandoffArgs,
     onExit: () -> Unit,
-    /** Opens the player for the next episode in place of this one; the count is for the next one. */
-    onPlayNextEpisode: (contentId: String, autoAdvanceCount: Int) -> Unit,
+    /**
+     * Opens the player for the next title in place of this one: the next
+     * episode, or a shuffle's next pick with its [shuffleId]. The count is for
+     * the next one.
+     */
+    onPlayNext: (contentId: String, autoAdvanceCount: Int, shuffleId: String?) -> Unit,
     settings: ExternalPlayerSettings = koinInject(),
 ): Boolean {
     var playExternally by rememberSaveable(entryId) {
         mutableStateOf(
             settings.enabled.value &&
                 args.roomId == null &&
-                args.castLaunchId == null &&
-                args.shuffleId == null,
+                args.castLaunchId == null,
         )
     }
     if (!playExternally) return false
@@ -79,10 +82,11 @@ fun handOffToZidooIfEnabled(
     }
     TvExternalPlayerScreen(
         request = request,
+        shuffleId = args.shuffleId?.takeIf { it.isNotBlank() },
         onExit = onExit,
         onPlayInSilo = { playExternally = false },
         autoAdvanceCount = args.autoAdvanceCount,
-        onPlayNextEpisode = onPlayNextEpisode,
+        onPlayNext = onPlayNext,
     )
     return true
 }

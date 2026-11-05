@@ -14,6 +14,8 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.withTimeoutOrNull
 import org.siloserver.silo.network.ApiResult
+import org.siloserver.silo.playback.ShuffleNextPick
+import org.siloserver.silo.playback.ShufflePlayback
 import org.siloserver.silo.playback.nextEpisodeAfter
 import org.siloserver.silo.repository.CatalogRepository
 import kotlinx.coroutines.Dispatchers
@@ -82,11 +84,29 @@ sealed interface ZidooHandoffState {
     /** The Zidoo player closed; sending the final position to the server. */
     data class Saving(override val runId: Long, val title: String) : ZidooHandoffState
 
-    /** [upNext] is the next episode to offer, when an episode played to its end and has one. */
+    /**
+     * [upNext] is what to offer next, when the title played to its end and has
+     * one: the next episode, or a shuffle's next random pick.
+     */
     data class Finished(override val runId: Long, val upNext: UpNextEpisode? = null) : ZidooHandoffState
 
-    /** The episode after the one that just finished, as Silo's own Up Next names it. */
-    data class UpNextEpisode(val contentId: String, val label: String)
+    /** What plays after the title that just finished, as Silo's own Up Next names it. */
+    data class UpNextEpisode(
+        val contentId: String,
+        val label: String,
+        /** Set when a running shuffle picked it rather than the series order. */
+        val shuffle: UpNextShuffle? = null,
+    )
+
+    /** A shuffle's Up Next, as Silo's own player shows it ("Up Next at Random"). */
+    data class UpNextShuffle(
+        /** What the shuffle plays from, such as "Movies" or "Breaking Bad · Season 2". */
+        val scopeLabel: String?,
+        /** True while Pick Another or Play Now waits for the server. */
+        val busy: Boolean = false,
+        /** Why the last Pick Another or Play Now didn't work. */
+        val message: String? = null,
+    )
 
     data class Failed(
         override val runId: Long,
@@ -166,6 +186,8 @@ class ZidooHandoffCoordinator(
     private val relayClient: OkHttpClient,
     /** Settings → External Player → Hand-off Log: what each step of the latest hand-off did. */
     private val handoffLog: ZidooHandoffLog,
+    /** The running shuffle [shuffleId], for a title that is one of its picks. */
+    private val shufflePlayback: (shuffleId: String) -> ShufflePlayback,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
@@ -194,6 +216,15 @@ class ZidooHandoffCoordinator(
     /** The run whose screen came back before the Zidoo player reported a video. */
     private val returnedBeforePlayback = MutableStateFlow(0L)
 
+    /** The shuffle behind a finished run's Up Next, and the pick that just played. */
+    private data class FinishedShuffle(val runId: Long, val shuffle: ShufflePlayback, val playedContentId: String)
+
+    private var finishedShuffle: FinishedShuffle? = null
+
+    /** Pick Another or Play Now, while it waits for the server. */
+    private var shuffleJob: Job? = null
+    private var shuffleAdvancing = false
+
     // Seeded from the clock so an id a screen saved before Silo was killed
     // cannot match a run in the new process.
     private var lastRunId = System.currentTimeMillis()
@@ -206,17 +237,23 @@ class ZidooHandoffCoordinator(
      * player lands back in Silo rather than on the home screen. The run drops
      * its reference to [launch] as soon as it has been used, so the Activity
      * is not held for the length of the film.
+     *
+     * [shuffleId] names the running shuffle the title is a pick of; Up Next
+     * then offers the shuffle's next random pick instead of the next episode.
      */
-    fun start(request: VideoPlaybackStartRequest, launch: (Intent) -> Unit): Long {
+    fun start(request: VideoPlaybackStartRequest, shuffleId: String? = null, launch: (Intent) -> Unit): Long {
         val previous = job
         val runId = ++lastRunId
         _state.value = ZidooHandoffState.Preparing(runId)
+        finishedShuffle = null
+        shuffleJob?.cancel()
+        shuffleAdvancing = false
         val launcher = AtomicReference(launch)
         job = scope.launch {
             // Let an earlier run finish closing its session first, so that
             // cleanup cannot land on top of this run's session.
             previous?.cancelAndJoin()
-            run(runId, request, launcher)
+            run(runId, request, shuffleId, launcher)
         }
         return runId
     }
@@ -259,6 +296,84 @@ class ZidooHandoffCoordinator(
         }
     }
 
+    /**
+     * Up Next "Pick Another": the shuffle replaces its next pick, which the
+     * finished [runId]'s Up Next then shows. With nothing else to pick, Up
+     * Next closes.
+     */
+    fun pickAnotherShuffle(runId: Long) {
+        val finished = finishedShuffle?.takeIf { it.runId == runId } ?: return
+        if (shuffleJob?.isActive == true) return
+        markShuffleBusy(runId)
+        shuffleJob = scope.launch {
+            val result = finished.shuffle.pickAnother()
+            val failed = result !is ApiResult.Success && !finished.shuffle.exhausted
+            updateShuffleUpNext(runId, finished, if (failed) SHUFFLE_PICK_FAILED else null)
+        }
+    }
+
+    /**
+     * Up Next "Play Now", or its countdown ending: moves the shuffle past the
+     * pick that played and passes [play] the one to play next, from the
+     * beginning. The server moves on only once, so a retry plays the same pick.
+     */
+    fun playNextShufflePick(runId: Long, play: (contentId: String) -> Unit) {
+        val finished = finishedShuffle?.takeIf { it.runId == runId } ?: return
+        if (shuffleAdvancing) return
+        shuffleAdvancing = true
+        // A Pick Another still in flight decides what plays; wait for it.
+        val pending = shuffleJob
+        markShuffleBusy(runId)
+        shuffleJob = scope.launch {
+            try {
+                pending?.join()
+                markShuffleBusy(runId)
+                val result = finished.shuffle.advance(finished.playedContentId)
+                val target = (result as? ApiResult.Success)?.data?.current?.contentId
+                if (target == null) {
+                    val message = SHUFFLE_CONTINUE_FAILED.takeUnless { finished.shuffle.exhausted }
+                    updateShuffleUpNext(runId, finished, message)
+                    return@launch
+                }
+                if (_state.value.runId != runId) return@launch
+                handoffLog.add("Shuffle moved on")
+                play(target)
+            } finally {
+                shuffleAdvancing = false
+            }
+        }
+    }
+
+    /** Up Next "Stop Shuffling": ends the shuffle on the server. */
+    fun stopShuffle(runId: Long) {
+        val finished = finishedShuffle?.takeIf { it.runId == runId } ?: return
+        finishedShuffle = null
+        shuffleJob?.cancel()
+        finished.shuffle.stopInBackground()
+    }
+
+    /** Shows the shuffle's Up Next as waiting for the server. */
+    private fun markShuffleBusy(runId: Long) {
+        val finished = _state.value as? ZidooHandoffState.Finished ?: return
+        val upNext = finished.upNext ?: return
+        val shuffle = upNext.shuffle ?: return
+        if (finished.runId != runId || shuffle.busy) return
+        _state.value = finished.copy(upNext = upNext.copy(shuffle = shuffle.copy(busy = true, message = null)))
+    }
+
+    /** Shows the shuffle's current next pick, or closes Up Next when there is none. */
+    private fun updateShuffleUpNext(runId: Long, finished: FinishedShuffle, message: String?) {
+        val state = _state.value as? ZidooHandoffState.Finished ?: return
+        if (state.runId != runId) return
+        val shown = state.upNext ?: return
+        val upNext = if (message != null) {
+            shown.copy(shuffle = shown.shuffle?.copy(busy = false, message = message))
+        } else {
+            finished.shuffle.nextPickAfter(finished.playedContentId)?.toUpNext(finished.shuffle.scopeLabel)
+        }
+        _state.value = state.copy(upNext = upNext)
+    }
+
     /** Clears a finished or failed [runId] once its screen has acted on it. */
     fun acknowledge(runId: Long) {
         val current = _state.value
@@ -284,6 +399,7 @@ class ZidooHandoffCoordinator(
     private suspend fun run(
         runId: Long,
         request: VideoPlaybackStartRequest,
+        shuffleId: String?,
         launcher: AtomicReference<((Intent) -> Unit)?>,
     ) {
         var sessionId: String? = null
@@ -293,6 +409,9 @@ class ZidooHandoffCoordinator(
         var nextEpisode: Deferred<ZidooHandoffState.UpNextEpisode?>? = null
         try {
             handoffLog.startRun("Hand-off started (${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE})")
+            // A shuffle replaces the series order: Up Next offers its next pick.
+            val shuffle = shuffleId?.takeIf { it.isNotBlank() }?.let(shufflePlayback)
+            if (shuffle != null) handoffLog.add("Shuffle pick")
             // Checked first, so a box without PlexToZidoo never opens a server session.
             if (!isPlexToZidooInstalled(appContext)) return fail(runId, NOT_INSTALLED_MESSAGE, canPlayInSilo = true)
 
@@ -356,8 +475,9 @@ class ZidooHandoffCoordinator(
             )
 
             // Looked up while the episode plays, so Up Next is ready the
-            // moment the Zidoo player closes.
-            nextEpisode = scope.async { findNextEpisode(ready, request.libraryId) }
+            // moment the Zidoo player closes. A shuffle asks its server when
+            // the title ends instead, as Silo's own player does.
+            if (shuffle == null) nextEpisode = scope.async { findNextEpisode(ready, request.libraryId) }
 
             val subtitleTracks = version?.subtitleTracks.orEmpty()
             val title = displayTitle(ready)
@@ -506,10 +626,16 @@ class ZidooHandoffCoordinator(
                     if (!stopped) Log.w(TAG, "Another playback took over before the final position was saved")
                     sessionClosed = true
                     val lookup = nextEpisode
-                    val upNext = if (lookup != null && endWatch.reachedEnd(outcome.lastPositionMs, outcome.durationMs)) {
-                        withTimeoutOrNull(UP_NEXT_LOOKUP_WAIT_MS) { lookup.await() }
-                    } else {
-                        null
+                    val upNext = when {
+                        !endWatch.reachedEnd(outcome.lastPositionMs, outcome.durationMs) -> null
+                        shuffle != null -> withTimeoutOrNull(UP_NEXT_LOOKUP_WAIT_MS) {
+                            shuffleUpNext(shuffle, request.contentId)
+                        }
+                        lookup != null -> withTimeoutOrNull(UP_NEXT_LOOKUP_WAIT_MS) { lookup.await() }
+                        else -> null
+                    }
+                    if (shuffle != null && upNext != null) {
+                        finishedShuffle = FinishedShuffle(runId, shuffle, request.contentId)
                     }
                     setState(runId, ZidooHandoffState.Finished(runId, upNext))
                 }
@@ -639,6 +765,16 @@ class ZidooHandoffCoordinator(
         }
     }
 
+    /**
+     * The shuffle's pick after [playedContentId], read fresh: the server
+     * replaces a next pick that can no longer play. Null when nothing else in
+     * the shuffle can play.
+     */
+    private suspend fun shuffleUpNext(shuffle: ShufflePlayback, playedContentId: String): ZidooHandoffState.UpNextEpisode? {
+        shuffle.refresh()
+        return shuffle.nextPickAfter(playedContentId)?.toUpNext(shuffle.scopeLabel)
+    }
+
     /** Starts the relay for [upstream]; null, and a log line, when this box will not let it listen. */
     private fun startRelay(upstream: String, path: String?, ready: VideoPlaybackStartResult.Ready): ZidooStreamRelay? =
         try {
@@ -686,6 +822,20 @@ class ZidooHandoffCoordinator(
     }
 
     private fun TimeRange.toSkipRange() = SkipRange(startSeconds = start, endSeconds = end)
+
+    /** A shuffle pick as Up Next names it: "Series · S01E02 · Title" for an episode, the title for a film. */
+    private fun ShuffleNextPick.toUpNext(scopeLabel: String?): ZidooHandoffState.UpNextEpisode {
+        val label = if (isEpisode) {
+            listOfNotNull(
+                seriesTitle?.takeIf { it.isNotBlank() },
+                "S%02dE%02d".format(seasonNumber, episodeNumber),
+                title.takeIf { it.isNotBlank() },
+            ).joinToString(" · ")
+        } else {
+            title
+        }
+        return ZidooHandoffState.UpNextEpisode(contentId, label, ZidooHandoffState.UpNextShuffle(scopeLabel))
+    }
 
     companion object {
         private const val TAG = "ZidooHandoff"
@@ -754,6 +904,10 @@ class ZidooHandoffCoordinator(
 
         /** How long the end of a run waits for an Up Next lookup still in flight. */
         private const val UP_NEXT_LOOKUP_WAIT_MS = 5_000L
+
+        // Silo's own player's wording (TvPlayerViewModel).
+        private const val SHUFFLE_CONTINUE_FAILED = "Couldn't continue the shuffle."
+        private const val SHUFFLE_PICK_FAILED = "Couldn't pick another."
 
         /** How recently the relay must have sent media for the player to count as fetching. */
         private const val RELAY_ACTIVE_WINDOW_MS = 20_000L

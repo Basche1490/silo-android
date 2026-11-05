@@ -228,7 +228,8 @@ player is composed (before the `TvPlayerScreen(` call and the playback-display
 binding that precedes it). It passes the destination's values (content id,
 file, quality, resume position, tracks, room, cast launch, shuffle,
 auto-advance count) to `handOffToZidooIfEnabled`, returns from the destination
-when it took over, and opens the next episode's `TvRoute.Player` for Up Next.
+when it took over, and, for Up Next, opens the next episode's or shuffle
+pick's `TvRoute.Player`, passing the shuffle id on (`onPlayNext`).
 If a merge removed it, copy it back from the fork's version before the merge:
 during a merge, `git show HEAD:androidTvApp/src/androidMain/kotlin/org/siloserver/silo/tv/ui/navigation/TvAppNavigation.kt`
 prints it, and on GitHub the file's **History** shows it.
@@ -289,6 +290,11 @@ are the dependencies to check:
   follows the rule in `TvPlayerViewModel` that offers Up Next when playback
   crosses `MarkerTimeline.upNextCreditsStart()`, the start of the last credits
   range; if Silo changes that rule, follow it.
+- **Shuffle:** `ShuffleFeatureStore.playback`, and `ShufflePlayback`'s
+  `refresh`, `nextPickAfter`, `advance`, `pickAnother`, `stopInBackground`,
+  `exhausted` and `scopeLabel`. The shuffle Up Next follows Silo's own
+  (`TvPlayerViewModel`'s `advanceShuffle`, `pickAnotherShuffle` and
+  `stopShuffling`); if Silo changes how a shuffle moves on, follow it.
 - **Profiles:** `ProfileAwayTracker`'s `isCasting` parameter and
   `onRemotePlaybackChanged`.
 - **Screens and settings:** `TvDialogCard`, `TvPlayerChrome`, `TvPlayerType`,
@@ -333,6 +339,11 @@ not undo them; the unit tests named in brackets guard the ones they can.
   minute. Stopping partway, seeking into the credits, resuming inside them,
   and a credits marker in the first half of the episode (opening credits)
   never trigger it (`ZidooEndWatchTest`).
+- **Shuffle plays in the Zidoo player.** A shuffle pick hands off like any
+  title, and its Up Next is the shuffle's next pick, read from the server when
+  the pick ends, as Silo's own player does. Before, a shuffle fell back to
+  Silo's own player, which also meant Silo played sound and the Zidoo
+  firmware then closed Silo on the next hand-off (see theme music below).
 - **Silo waits long enough for the Zidoo player.** It waits up to five
   minutes (`PLAYER_START_TIMEOUT_MS`) for the player to report the video,
   counting from when PlexToZidoo opens. PlexToZidoo's Debug data screen waits
@@ -408,6 +419,8 @@ Install the new APK from the Downloader address, then check:
    home and away from home. If it doesn't, the "Couldn't play" card says what
    the relay saw; Direct Stream Link on plays around it.
 9. Stopping an episode partway returns to the show with no Up Next countdown.
+   A shuffle (Shuffle on a show, season or library) plays in the Zidoo player,
+   and at the end of each pick "Up Next at Random" offers the next one.
 10. With Skip Credits Automatically on, the credits are skipped at the end of
     an episode, not right after its intro. Where the server marks two credits
     ranges, the scene between them plays.

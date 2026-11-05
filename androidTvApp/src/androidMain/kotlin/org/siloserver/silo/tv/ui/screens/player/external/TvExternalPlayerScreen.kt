@@ -45,6 +45,7 @@ import org.siloserver.silo.common.player.video.VideoPlaybackStartRequest
 import org.siloserver.silo.tv.ui.components.TvDialogAction
 import org.siloserver.silo.tv.ui.components.TvDialogActionStyle
 import org.siloserver.silo.tv.ui.components.TvDialogCard
+import org.siloserver.silo.tv.ui.components.TvDialogDefaults
 import org.siloserver.silo.tv.ui.screens.player.TvPlayerChrome
 import org.siloserver.silo.tv.ui.screens.player.TvPlayerType
 
@@ -58,10 +59,12 @@ import org.siloserver.silo.tv.ui.screens.player.TvPlayerType
 @Composable
 fun TvExternalPlayerScreen(
     request: VideoPlaybackStartRequest,
+    /** The running shuffle [request] is a pick of, or null. */
+    shuffleId: String?,
     onExit: () -> Unit,
     onPlayInSilo: () -> Unit,
     autoAdvanceCount: Int,
-    onPlayNextEpisode: (contentId: String, autoAdvanceCount: Int) -> Unit,
+    onPlayNext: (contentId: String, autoAdvanceCount: Int, shuffleId: String?) -> Unit,
     coordinator: ZidooHandoffCoordinator = koinInject(),
     playerSettings: PlayerSettingsStore = koinInject(),
     externalSettings: ExternalPlayerSettings = koinInject(),
@@ -76,7 +79,7 @@ fun TvExternalPlayerScreen(
         if (runId == 0L) {
             // The composition's context is the Activity, so PlexToZidoo opens
             // in Silo's task and closing the Zidoo player returns here.
-            runId = coordinator.start(request) { intent -> context.startActivity(intent) }
+            runId = coordinator.start(request, shuffleId) { intent -> context.startActivity(intent) }
         } else if (coordinator.state.value.runId != runId) {
             onExit()
         }
@@ -142,10 +145,25 @@ fun TvExternalPlayerScreen(
                     playerSettings = playerSettings,
                     externalSettings = externalSettings,
                     onPlay = { automatic ->
-                        coordinator.acknowledge(runId)
                         // Play Now is someone watching: it resets the
                         // "still watching?" count, as in Silo's own player.
-                        onPlayNextEpisode(next.contentId, if (automatic) autoAdvanceCount + 1 else 0)
+                        val count = if (automatic) autoAdvanceCount + 1 else 0
+                        if (next.shuffle != null) {
+                            // The server moves the shuffle on and names what plays.
+                            coordinator.playNextShufflePick(runId) { target ->
+                                coordinator.acknowledge(runId)
+                                onPlayNext(target, count, shuffleId)
+                            }
+                        } else {
+                            coordinator.acknowledge(runId)
+                            onPlayNext(next.contentId, count, null)
+                        }
+                    },
+                    onPickAnother = { coordinator.pickAnotherShuffle(runId) },
+                    onStopShuffling = {
+                        coordinator.stopShuffle(runId)
+                        coordinator.acknowledge(runId)
+                        onExit()
                     },
                     onBack = {
                         coordinator.acknowledge(runId)
@@ -182,6 +200,10 @@ fun TvExternalPlayerScreen(
  * countdown chosen in Settings → External Player (10 seconds unless changed);
  * with it off, or once the Still Watching Prompt's limit is reached, it waits
  * for Play Now.
+ *
+ * In a shuffle it is "Up Next at Random": the next random pick, movie or
+ * episode, with Pick Another and Stop Shuffling as in Silo's own player. A
+ * new pick starts the countdown again.
  */
 @Composable
 private fun UpNextCard(
@@ -190,8 +212,11 @@ private fun UpNextCard(
     playerSettings: PlayerSettingsStore,
     externalSettings: ExternalPlayerSettings,
     onPlay: (automatic: Boolean) -> Unit,
+    onPickAnother: () -> Unit,
+    onStopShuffling: () -> Unit,
     onBack: () -> Unit,
 ) {
+    val shuffle = next.shuffle
     val autoPlay by playerSettings.autoPlayNextFlow.collectAsState(initial = null)
     val passOutThreshold by playerSettings.passOutThresholdFlow.collectAsState(initial = null)
     val countdownSeconds by externalSettings.upNextCountdownSeconds.collectAsState()
@@ -211,14 +236,21 @@ private fun UpNextCard(
         onPlay(true)
     }
     TvDialogCard(
-        title = "Up Next",
-        message = next.label +
-            if (autoPlay == true && stillWatching) "\nStill watching? Choose Play Now to keep going." else "",
-        actions = listOf(
-            TvDialogAction("Play Now", { onPlay(false) }, TvDialogActionStyle.Primary),
-            TvDialogAction("Back", onBack),
-        ),
+        title = if (shuffle != null) "Up Next at Random" else "Up Next",
+        message = listOfNotNull(
+            next.label,
+            shuffle?.scopeLabel?.takeIf { it.isNotBlank() }?.let { "Shuffling $it" },
+            "Still watching? Choose Play Now to keep going.".takeIf { autoPlay == true && stillWatching },
+            shuffle?.message ?: "Asking your server…".takeIf { shuffle?.busy == true },
+        ).joinToString("\n"),
+        actions = buildList {
+            add(TvDialogAction("Play Now", { onPlay(false) }, TvDialogActionStyle.Primary))
+            if (shuffle != null) add(TvDialogAction("Pick Another", onPickAnother))
+            add(TvDialogAction("Back", onBack))
+            if (shuffle != null) add(TvDialogAction("Stop Shuffling", onStopShuffling))
+        },
         initialFocusIndex = 0,
+        width = if (shuffle != null) 640.dp else TvDialogDefaults.Width,
         content = if (countdownOn && total > 0) {
             { CountdownRing(seconds = remaining, totalSeconds = total) }
         } else {
